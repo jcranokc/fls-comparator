@@ -12,9 +12,9 @@ export default defineConfig({
 
   // Manifest configuration
   manifest: {
-    name: 'FLS Comparator',
+    name: 'Salesforce FLS Comparator Expanded',
     description: 'Compare Salesforce Field Level Security across fields and orgs',
-    version: '1.0.0',
+    version: '1.0.1',
 
     permissions: ['storage', 'tabs', 'cookies'],
 
@@ -37,7 +37,7 @@ export default defineConfig({
     },
 
     sidebar_action: {
-      default_title: 'FLS Comparator',
+      default_title: 'Salesforce FLS Comparator Expanded',
       default_panel: 'entrypoints/sidepanel/index.html',
     },
   },
