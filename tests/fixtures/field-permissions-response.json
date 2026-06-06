@@ -1,0 +1,58 @@
+{
+  "totalSize": 4,
+  "done": true,
+  "records": [
+    {
+      "Id": "01k000000000001",
+      "Field": "Contact.Email",
+      "SobjectType": "Contact",
+      "ParentId": "0PS000000000001",
+      "Parent": {
+        "Name": "Admin",
+        "Label": "System Administrator",
+        "IsCustom": false
+      },
+      "PermissionsRead": true,
+      "PermissionsEdit": true
+    },
+    {
+      "Id": "01k000000000002",
+      "Field": "Contact.Email",
+      "SobjectType": "Contact",
+      "ParentId": "0PS000000000002",
+      "Parent": {
+        "Name": "Standard",
+        "Label": "Standard User",
+        "IsCustom": false
+      },
+      "PermissionsRead": true,
+      "PermissionsEdit": false
+    },
+    {
+      "Id": "01k000000000003",
+      "Field": "Contact.Email",
+      "SobjectType": "Contact",
+      "ParentId": "0PS000000000003",
+      "Parent": {
+        "Name": "Marketing_User",
+        "Label": "Marketing User",
+        "IsCustom": false
+      },
+      "PermissionsRead": true,
+      "PermissionsEdit": true
+    },
+    {
+      "Id": "01k000000000004",
+      "Field": "Contact.Email",
+      "SobjectType": "Contact",
+      "ParentId": "0PS000000000004",
+      "Parent": {
+        "Name": "Custom_Permission_Set",
+        "Label": "Custom Permission Set",
+        "IsCustom": true
+      },
+      "PermissionsRead": false,
+      "PermissionsEdit": false
+    }
+  ]
+}
