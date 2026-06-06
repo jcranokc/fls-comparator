@@ -61,6 +61,10 @@ export function Panel() {
   const [searchQuery, setSearchQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
 
+  // Pre-selection coming from pendingNavigation (injected button click)
+  const [pickerInitialObject, setPickerInitialObject] = useState<string | undefined>();
+  const [pickerInitialField, setPickerInitialField] = useState<string | undefined>();
+
   // Auto-diff state
   const [lastSnapshot, setLastSnapshot] = useState<FLSSnapshot | null>(null);
   const [lastSnapshotDismissed, setLastSnapshotDismissed] = useState(false);
@@ -163,6 +167,8 @@ export function Panel() {
       if (!nav?.objectApiName || !nav?.fieldApiName) return;
       await browser.storage.local.remove('pendingNavigation');
       setActiveTab('fls');
+      setPickerInitialObject(nav.objectApiName);
+      setPickerInitialField(nav.fieldApiName);
       handleFieldSelect(nav.objectApiName, nav.fieldApiName, nav.instanceUrl);
     };
 
@@ -398,7 +404,12 @@ export function Panel() {
             ) : (
               <>
                 <div class="p-4 border-b border-slate-700/50">
-                  <FieldPicker onFieldSelect={handleFieldSelect} disabled={loading} />
+                  <FieldPicker
+                    onFieldSelect={handleFieldSelect}
+                    disabled={loading}
+                    initialObject={pickerInitialObject}
+                    initialField={pickerInitialField}
+                  />
                 </div>
 
                 {compareSnapshot && (

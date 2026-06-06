@@ -6,10 +6,13 @@
  * and this worker performs the authenticated fetch and returns results.
  */
 function isTrustedSender(sender: browser.Runtime.MessageSender): boolean {
-  // Extension pages (popup, sidepanel) have no sender.tab
+  // Extension pages used as sidebar/popup have no sender.tab
   if (!sender.tab) return true;
-  // Content scripts must be running on a Salesforce domain
   const url = sender.tab.url ?? '';
+  // Extension pages opened as tabs (e.g. sidebar opened via tabs.create) are also trusted
+  if (url.startsWith(browser.runtime.getURL('/'))) return true;
+  if (!url) return false;
+  // Content scripts must be running on a Salesforce domain
   try {
     const { hostname } = new URL(url);
     return (

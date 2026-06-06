@@ -7,6 +7,10 @@ import { LoadingSkeleton } from './LoadingSkeleton';
 interface FieldPickerProps {
   onFieldSelect: (objectName: string, fieldName: string) => void;
   disabled?: boolean;
+  /** Pre-select this object once the list loads (e.g. from pendingNavigation). */
+  initialObject?: string;
+  /** Pre-select this field once the list loads. Does NOT re-trigger onFieldSelect. */
+  initialField?: string;
 }
 
 interface ObjectItem {
@@ -59,7 +63,7 @@ function ChevronDown() {
   );
 }
 
-export function FieldPicker({ onFieldSelect, disabled = false }: FieldPickerProps) {
+export function FieldPicker({ onFieldSelect, disabled = false, initialObject, initialField }: FieldPickerProps) {
   const [session, setSession] = useState<SalesforceSession | null>(null);
   const [objects, setObjects] = useState<ObjectItem[]>([]);
   const [fields, setFields] = useState<FieldItem[]>([]);
@@ -73,6 +77,9 @@ export function FieldPicker({ onFieldSelect, disabled = false }: FieldPickerProp
   const [fieldDropdownOpen, setFieldDropdownOpen] = useState(false);
   const [error, setError] = useState('');
   const [retryKey, setRetryKey] = useState(0);
+  // Tracks whether initial object/field props have been applied so we don't
+  // re-apply them if the user later manually changes the selection.
+  const initialAppliedRef = useRef(false);
 
   const objectDropdownRef = useRef<HTMLDivElement>(null);
   const fieldDropdownRef = useRef<HTMLDivElement>(null);
@@ -109,6 +116,11 @@ export function FieldPicker({ onFieldSelect, disabled = false }: FieldPickerProp
         if (!cancelled) {
           setObjects(objs);
           setError('');
+          // Auto-select the initial object once the list is available
+          if (initialObject && !initialAppliedRef.current) {
+            const found = objs.find(o => o.name === initialObject);
+            if (found) setSelectedObject(initialObject);
+          }
         }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load objects');
@@ -117,7 +129,8 @@ export function FieldPicker({ onFieldSelect, disabled = false }: FieldPickerProp
       }
     })();
     return () => { cancelled = true; };
-  }, [retryKey]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [retryKey]); // initialObject intentionally excluded — only apply on first load
 
   // Fetch fields when object changes
   useEffect(() => {
@@ -130,12 +143,24 @@ export function FieldPicker({ onFieldSelect, disabled = false }: FieldPickerProp
       try {
         setLoadingFields(true);
         setFields([]);
-        setSelectedField('');
-        setFieldSearch('');
+        // Don't clear selectedField when auto-applying initial values
+        if (initialAppliedRef.current || !initialField) {
+          setSelectedField('');
+          setFieldSearch('');
+        }
         const flds = await describeFields(session, selectedObject);
         if (!cancelled) {
           setFields(flds);
           setError('');
+          // Auto-select the initial field once loaded — without calling onFieldSelect
+          // (Panel already fetched FLS data via pendingNavigation)
+          if (initialField && !initialAppliedRef.current && selectedObject === initialObject) {
+            const found = flds.find(f => f.name === initialField);
+            if (found) {
+              setSelectedField(initialField);
+              initialAppliedRef.current = true;
+            }
+          }
         }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load fields');
@@ -144,7 +169,8 @@ export function FieldPicker({ onFieldSelect, disabled = false }: FieldPickerProp
       }
     })();
     return () => { cancelled = true; };
-  }, [selectedObject, session]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedObject, session]); // initialField / initialObject intentionally excluded
 
   const filteredObjects = useMemo(() => {
     if (!objectSearch) return objects;
