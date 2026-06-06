@@ -16,27 +16,31 @@ type SortOption = 'date' | 'object' | 'org';
 export function SnapshotManager({ onCompare, onBulkApply }: SnapshotManagerProps) {
   const [snapshots, setSnapshots] = useState<FLSSnapshot[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [loadRetry, setLoadRetry] = useState(0);
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState<SortOption>('date');
   const [importError, setImportError] = useState('');
   const [confirmingDeleteAll, setConfirmingDeleteAll] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load snapshots on mount
+  // Load snapshots on mount (re-runs when loadRetry increments)
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
+    setLoadError('');
     (async () => {
       try {
         const snaps = await loadSnapshots();
         if (!cancelled) setSnapshots(snaps);
       } catch (err) {
-        console.error('[SnapshotManager] Failed to load snapshots:', err);
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : 'Failed to load snapshots');
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [loadRetry]);
 
   const handleDelete = useCallback(async (snapshot: FLSSnapshot) => {
     try {
@@ -133,6 +137,21 @@ export function SnapshotManager({ onCompare, onBulkApply }: SnapshotManagerProps
 
     return result;
   }, [snapshots, search, sortBy]);
+
+  if (loadError) {
+    return (
+      <div class="flex flex-col items-center gap-3 py-8 text-center">
+        <p class="text-sm text-rose-400">{loadError}</p>
+        <button
+          onClick={() => setLoadRetry(k => k + 1)}
+          class="px-3 py-1.5 text-xs font-medium rounded-md bg-slate-700/50 text-slate-300
+                 border border-slate-600/50 hover:bg-slate-700 transition-colors duration-150"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   if (loading) {
     return (

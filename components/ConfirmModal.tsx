@@ -48,6 +48,8 @@ function initStates(changes: ChangeItem[]): RowState[] {
 
 export function ConfirmModal({ open, title, changes, onConfirm, onCancel, loading = false }: ConfirmModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
+  const allVisibleCheckboxRef = useRef<HTMLInputElement | null>(null);
+  const allReadOnlyCheckboxRef = useRef<HTMLInputElement | null>(null);
   const [states, setStates] = useState<RowState[]>(() => initStates(changes));
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -60,6 +62,32 @@ export function ConfirmModal({ open, title, changes, onConfirm, onCancel, loadin
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
   }, [open, loading, onCancel]);
+
+  // Filtered rows and select-all state — computed unconditionally so the
+  // indeterminate useEffect below (which must run before any early return) can see them.
+  const needle = searchQuery.trim().toLowerCase();
+  const displayedRows = open
+    ? changes
+        .map((change, i) => ({ change, i }))
+        .filter(({ change }) => typeFilter === 'all' || change.type === typeFilter)
+        .filter(({ change }) => !needle || change.name.toLowerCase().includes(needle))
+    : [];
+
+  const allVisibleChecked = displayedRows.length > 0 && displayedRows.every(({ i }) => states[i].effectiveRead);
+  const someVisibleChecked = displayedRows.some(({ i }) => states[i].effectiveRead);
+  const allReadOnlyChecked = displayedRows.length > 0 && displayedRows.every(({ i }) => states[i].effectiveRead && !states[i].effectiveEdit);
+  const someReadOnlyChecked = displayedRows.some(({ i }) => states[i].effectiveRead && !states[i].effectiveEdit);
+
+  // Imperative indeterminate updates — must run after each render since
+  // Preact doesn't expose indeterminate as a declarative prop.
+  useEffect(() => {
+    if (allVisibleCheckboxRef.current) {
+      allVisibleCheckboxRef.current.indeterminate = !allVisibleChecked && someVisibleChecked;
+    }
+    if (allReadOnlyCheckboxRef.current) {
+      allReadOnlyCheckboxRef.current.indeterminate = !allReadOnlyChecked && someReadOnlyChecked;
+    }
+  });
 
   if (!open) return null;
 
@@ -76,19 +104,6 @@ export function ConfirmModal({ open, title, changes, onConfirm, onCancel, loadin
       if (!s.effectiveRead) return { effectiveRead: true, effectiveEdit: false };
       return { ...s, effectiveEdit: !s.effectiveEdit };
     }));
-
-  // Filtered rows retain original indices for state lookup
-  const needle = searchQuery.trim().toLowerCase();
-  const displayedRows = changes
-    .map((change, i) => ({ change, i }))
-    .filter(({ change }) => typeFilter === 'all' || change.type === typeFilter)
-    .filter(({ change }) => !needle || change.name.toLowerCase().includes(needle));
-
-  // Select-all state scoped to the filtered view
-  const allVisibleChecked = displayedRows.length > 0 && displayedRows.every(({ i }) => states[i].effectiveRead);
-  const someVisibleChecked = displayedRows.some(({ i }) => states[i].effectiveRead);
-  const allReadOnlyChecked = displayedRows.length > 0 && displayedRows.every(({ i }) => states[i].effectiveRead && !states[i].effectiveEdit);
-  const someReadOnlyChecked = displayedRows.some(({ i }) => states[i].effectiveRead && !states[i].effectiveEdit);
 
   const toggleAllVisible = () => {
     setStates(prev => {
@@ -227,7 +242,7 @@ export function ConfirmModal({ open, title, changes, onConfirm, onCancel, loadin
             <input
               type="checkbox"
               checked={allVisibleChecked}
-              ref={(el: HTMLInputElement | null) => { if (el) el.indeterminate = !allVisibleChecked && someVisibleChecked; }}
+              ref={allVisibleCheckboxRef}
               onChange={toggleAllVisible}
               disabled={loading}
               class="w-3.5 h-3.5 rounded border-slate-500 bg-slate-700 accent-cyan-500 cursor-pointer disabled:opacity-50"
@@ -238,7 +253,7 @@ export function ConfirmModal({ open, title, changes, onConfirm, onCancel, loadin
             <input
               type="checkbox"
               checked={allReadOnlyChecked}
-              ref={(el: HTMLInputElement | null) => { if (el) el.indeterminate = !allReadOnlyChecked && someReadOnlyChecked; }}
+              ref={allReadOnlyCheckboxRef}
               onChange={toggleAllReadOnly}
               disabled={loading}
               class="w-3.5 h-3.5 rounded border-slate-500 bg-slate-700 accent-cyan-500 cursor-pointer disabled:opacity-50"

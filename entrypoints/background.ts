@@ -5,11 +5,32 @@
  * Messages arrive from the popup/panel with session credentials,
  * and this worker performs the authenticated fetch and returns results.
  */
+function isTrustedSender(sender: browser.Runtime.MessageSender): boolean {
+  // Extension pages (popup, sidepanel) have no sender.tab
+  if (!sender.tab) return true;
+  // Content scripts must be running on a Salesforce domain
+  const url = sender.tab.url ?? '';
+  try {
+    const { hostname } = new URL(url);
+    return (
+      hostname.endsWith('.salesforce.com') ||
+      hostname.endsWith('.lightning.force.com') ||
+      hostname.endsWith('.salesforce-setup.com')
+    );
+  } catch {
+    return false;
+  }
+}
+
 export default defineBackground(() => {
   console.log('[FLS Comparator] Background service worker started');
 
   browser.runtime.onMessage.addListener(
-    (message: unknown, _sender: browser.Runtime.MessageSender) => {
+    (message: unknown, sender: browser.Runtime.MessageSender) => {
+      if (!isTrustedSender(sender)) {
+        console.warn('[FLS Comparator] Rejected message from untrusted sender:', sender.tab?.url);
+        return false;
+      }
       const msg = message as { type: string; payload?: Record<string, unknown> };
 
       switch (msg.type) {
@@ -274,6 +295,13 @@ async function authenticatedFetch(url: string, sessionId: string): Promise<unkno
       'Content-Type': 'application/json',
     },
   });
+
+  if (response.status === 401 || response.status === 403) {
+    throw new ApiError(
+      'Your Salesforce session has expired — please reload the page and try again.',
+      response.status
+    );
+  }
 
   if (!response.ok) {
     const errorText = await response.text();

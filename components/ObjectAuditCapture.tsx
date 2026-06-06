@@ -72,10 +72,11 @@ export function ObjectAuditCapture() {
     setSelectedObject(name);
     setDropdownOpen(false);
     setObjectSearch('');
-    // Reset any prior capture when object changes
+    // Reset any prior capture state (including error) when object changes
     setSnapshots([]);
     setSaved(false);
-    if (status === 'done') setStatus('ready');
+    setError('');
+    setStatus('ready');
   }, [status]);
 
   const handleCapture = useCallback(async () => {

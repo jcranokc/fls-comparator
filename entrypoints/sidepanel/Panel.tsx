@@ -101,16 +101,26 @@ export function Panel() {
     refreshSavedSnapshots();
   }, [refreshSavedSnapshots]);
 
-  // Close dropdown when clicking outside; clear search on close
+  // Fix 3: Close dropdown when clicking outside; clear search on close.
+  // Also listen for Escape key so search is reset when the dropdown is dismissed via keyboard.
   useEffect(() => {
     if (!applyDropdownOpen) { setApplySearch(''); return; }
-    const handler = (e: MouseEvent) => {
+    const handleMouseDown = (e: MouseEvent) => {
       if (applyDropdownRef.current && !applyDropdownRef.current.contains(e.target as Node)) {
         setApplyDropdownOpen(false);
       }
     };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setApplyDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleMouseDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleMouseDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
   }, [applyDropdownOpen]);
 
   const checkPage = useCallback(() => {
@@ -210,13 +220,15 @@ export function Panel() {
     setActiveTab('fls');
   }, []);
 
+  // Fix 2: Pass the target org's instanceUrl to getSession so the correct org's
+  // session is used even when multiple Salesforce tabs are open.
   const handleApply = useCallback(async (snapshot: FLSSnapshot) => {
     if (!currentSnapshot) {
       setError('Select a target field on the Field Security tab first, then come back and click Apply.');
       return;
     }
     try {
-      const session = await getSession();
+      const session = await getSession(currentSnapshot.org.instanceUrl);
       if (!session) {
         setError('Could not get Salesforce session.');
         return;
@@ -250,7 +262,8 @@ export function Panel() {
       }));
     setApplyLoading(true);
     try {
-      const session = await getSession();
+      // Fix 2: Use the target org's instanceUrl so the apply goes to the right org.
+      const session = await getSession(currentSnapshot?.org.instanceUrl);
       if (!session) throw new Error('Session expired');
       const applyResult = await applyFLSChanges(session, selectedChanges);
       if (applyResult.skipped.length > 0) {
@@ -693,7 +706,7 @@ export function Panel() {
             newEdit: c.newEdit,
           }))}
           onConfirm={handleConfirmApply}
-          onCancel={() => setApplyChanges(null)}
+          onCancel={applyLoading ? () => {} : () => setApplyChanges(null)}
           loading={applyLoading}
         />
       )}

@@ -2,7 +2,7 @@
  * Tests for lib/utils/diff.ts and lib/utils/format.ts (buildSetupUrl)
  */
 import { describe, it, expect } from 'vitest';
-import { computeDiff, filterDifferencesOnly } from '../../lib/utils/diff';
+import { computeDiff, filterDifferencesOnly, isDeadField } from '../../lib/utils/diff';
 import { buildSetupUrl } from '../../lib/utils/format';
 import type { FLSSnapshot, FieldPermissionRecord } from '../../lib/api/types';
 
@@ -241,5 +241,62 @@ describe('filterDifferencesOnly', () => {
     const filtered = filterDifferencesOnly(fullDiff);
 
     expect(filtered.rows).toHaveLength(0);
+  });
+
+  it('resets matching count to 0 and recalculates all summary fields', () => {
+    const source = makeSnapshot([
+      makePerm('Admin', true, true, 'Profile'),
+      makePerm('Standard', true, false, 'Profile'),
+      makePerm('SourceOnly', true, true, 'PermissionSet'),
+    ]);
+    const target = makeSnapshot([
+      makePerm('Admin', true, true, 'Profile'),   // MATCH
+      makePerm('Standard', false, false, 'Profile'), // BOTH_DIFFER
+      makePerm('TargetOnly', true, false, 'PermissionSet'), // NEW_IN_TARGET
+    ]);
+
+    const filtered = filterDifferencesOnly(computeDiff(source, target));
+
+    expect(filtered.summary.matching).toBe(0);
+    expect(filtered.summary.differing).toBe(1);
+    expect(filtered.summary.missingInTarget).toBe(1);
+    expect(filtered.summary.newInTarget).toBe(1);
+    expect(filtered.summary.total).toBe(3);
+  });
+});
+
+describe('cross-org asymmetric diff', () => {
+  it('marks profiles unique to source as MISSING_IN_TARGET and unique to target as NEW_IN_TARGET', () => {
+    const source = makeSnapshot([
+      makePerm('DeletedProfile', true, true, 'Profile'),
+      makePerm('SharedProfile', true, false, 'Profile'),
+    ]);
+    const target = makeSnapshot([
+      makePerm('SharedProfile', true, false, 'Profile'),
+      makePerm('NewProfile', false, false, 'Profile'),
+    ]);
+
+    const result = computeDiff(source, target);
+
+    expect(result.summary.missingInTarget).toBe(1);
+    expect(result.summary.newInTarget).toBe(1);
+    expect(result.summary.matching).toBe(1);
+    expect(result.summary.total).toBe(3);
+    expect(result.rows.find(r => r.name === 'DeletedProfile')?.status).toBe('MISSING_IN_TARGET');
+    expect(result.rows.find(r => r.name === 'NewProfile')?.status).toBe('NEW_IN_TARGET');
+  });
+});
+
+describe('isDeadField', () => {
+  it('returns false for an empty permissions array', () => {
+    expect(isDeadField([])).toBe(false);
+  });
+
+  it('returns true when no profile has read access', () => {
+    expect(isDeadField([makePerm('Admin', false, false)])).toBe(true);
+  });
+
+  it('returns false when at least one profile has read access', () => {
+    expect(isDeadField([makePerm('Admin', false, false), makePerm('Standard', true, false)])).toBe(false);
   });
 });

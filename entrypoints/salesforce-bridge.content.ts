@@ -19,30 +19,20 @@ export default defineContentScript({
   main() {
     console.log('[FLS Comparator] Content script loaded on Salesforce page');
 
-    // Listen for session requests from popup/panel
-    browser.runtime.onMessage.addListener(
-      (message: unknown, _sender: browser.Runtime.MessageSender) => {
-        const msg = message as { type: string };
-        if (msg.type === 'GET_SESSION') {
-          const session = extractSession();
-          return Promise.resolve({ type: 'SESSION_RESPONSE', payload: session });
-        }
-        return false;
-      }
-    );
-
     // Inject the "Open in FLS Comparator" button on Set Field-Level Security pages
     tryInjectButton();
 
     // Lightning is a SPA — re-check on every URL change
     let lastHref = location.href;
-    new MutationObserver(() => {
+    const spaObserver = new MutationObserver(() => {
       if (location.href !== lastHref) {
         lastHref = location.href;
         document.getElementById('fls-comparator-launch-btn')?.remove();
         setTimeout(tryInjectButton, 900);
       }
-    }).observe(document.body, { childList: true, subtree: true });
+    });
+    spaObserver.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('beforeunload', () => spaObserver.disconnect(), { once: true });
   },
 });
 
@@ -77,7 +67,11 @@ function extractSession(): SessionInfo | null {
 }
 
 /**
- * Extract the Salesforce session ID from the `sid` cookie.
+ * Extract the Salesforce session ID from the sid cookie pattern in the URL or page context.
+ * Note: Salesforce marks sid as HttpOnly so document.cookie cannot read it — the background
+ * worker handles actual session retrieval via browser.cookies.get() instead.
+ * This function exists only to extract orgId from the sid when it IS accessible
+ * (some older sandbox orgs set it without HttpOnly).
  */
 function extractSessionId(): string | null {
   const cookies = document.cookie.split(';');
@@ -266,7 +260,8 @@ function injectInline(ctx: FieldPageContext, saveBtn: HTMLElement) {
     fontSize: '12px', fontWeight: 'bold', verticalAlign: 'middle',
     lineHeight: '22px', height: '24px',
   });
-  saveBtn.parentElement!.insertBefore(btn, saveBtn.nextSibling);
+  if (!saveBtn.parentElement) { injectFloat(ctx); return; }
+  saveBtn.parentElement.insertBefore(btn, saveBtn.nextSibling);
 }
 
 function injectFloat(ctx: FieldPageContext) {

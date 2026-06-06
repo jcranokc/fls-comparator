@@ -4,12 +4,18 @@
  */
 import type { SalesforceSession } from './types';
 
-function isSalesforceUrl(url: string): boolean {
-  return (
-    url.includes('.salesforce.com') ||
-    url.includes('.lightning.force.com') ||
-    url.includes('.salesforce-setup.com')
-  );
+export function isSalesforceUrl(url: string): boolean {
+  try {
+    const { hostname } = new URL(url);
+    return (
+      hostname === 'salesforce.com' ||
+      hostname.endsWith('.salesforce.com') ||
+      hostname.endsWith('.lightning.force.com') ||
+      hostname.endsWith('.salesforce-setup.com')
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -47,7 +53,8 @@ export async function getSession(instanceUrl?: string): Promise<SalesforceSessio
 
     return null;
   } catch (error) {
-    console.error('[FLS Comparator] Failed to get session:', error);
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error('[FLS Comparator] Failed to get session:', msg);
     return null;
   }
 }

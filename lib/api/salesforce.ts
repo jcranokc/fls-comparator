@@ -84,7 +84,10 @@ async function customFieldId(
       session,
       `SELECT Id FROM CustomField WHERE TableEnumOrId = '${encodeSOQL(objectApiName)}' AND DeveloperName = '${encodeSOQL(developerName)}'`
     );
-  } catch {
+  } catch (err) {
+    // Standard fields have no CustomField record; treat empty result as non-error.
+    // Session/network errors surface through the other parallel queries in fetchFLS.
+    console.debug('[FLS Comparator] customFieldId lookup:', err instanceof Error ? err.message : err);
     return { records: [] };
   }
 }
@@ -127,7 +130,10 @@ async function compositeRequest(
   if (response?.type === 'API_ERROR') throw new Error(response.payload.message);
 
   const data = response?.payload as { compositeResponse?: CompositeResponseItem[] };
-  return (data?.compositeResponse ?? []).filter(r => r.httpStatusCode >= 400);
+  if (!Array.isArray(data?.compositeResponse)) {
+    throw new Error('Unexpected Composite API response shape: missing compositeResponse array');
+  }
+  return data.compositeResponse.filter(r => r.httpStatusCode >= 400);
 }
 
 // Errors to drop silently — user can't act on them (license/type mismatches, stale IDs)
@@ -239,7 +245,13 @@ export async function describeFields(
 async function restQueryAll<T>(session: SalesforceSession, soql: string): Promise<T[]> {
   let result = await restQuery<T>(session, soql);
   const records: T[] = [...result.records];
+  const MAX_PAGES = 50; // caps at ~100,000 records per query
+  let pages = 0;
   while (!result.done && result.nextRecordsUrl) {
+    if (++pages >= MAX_PAGES) {
+      console.warn('[FLS Comparator] restQueryAll: reached page limit, results truncated');
+      break;
+    }
     result = await restGet<ToolingQueryResponse<T>>(session, result.nextRecordsUrl);
     records.push(...result.records);
   }
@@ -522,7 +534,9 @@ export async function computeApplyChanges(
 
 /** Parse the change index encoded in a composite referenceId (e.g. "update_3" → 3). */
 function parseChangeIndex(referenceId: string): number {
-  return parseInt(referenceId.split('_').pop() ?? '', 10);
+  const idx = parseInt(referenceId.split('_').pop() ?? '', 10);
+  if (isNaN(idx)) throw new Error(`Malformed composite referenceId: ${referenceId}`);
+  return idx;
 }
 
 /**
@@ -557,16 +571,12 @@ export async function applyFLSChanges(
   // depending on org configuration, so we index by both)
   const parentToFpId = new Map(existingFpRecords.map(r => [r.ParentId, r.Id]));
 
-  // Collect ALL profile IDs we'll need: from existing records AND from the changes list.
-  // This is critical for CREATE operations — if no FieldPermissions record exists yet,
-  // the existing records won't contain the profile, but we still need the backing PermSet ID.
-  const profileIdsFromExisting = existingFpRecords
-    .filter(r => r.ParentId.toLowerCase().startsWith('00e'))
-    .map(r => r.ParentId);
-  const profileIdsFromChanges = changes
+  // Collect all profile IDs from the changes list — we need their backing PermSet IDs.
+  // Use the type field (set from the fetched snapshot) instead of ID prefix heuristics.
+  const allProfileIds = [...new Set(changes
+    .filter(c => c.type === 'Profile')
     .map(c => c.permissionSetId)
-    .filter(id => id.toLowerCase().startsWith('00e'));
-  const allProfileIds = [...new Set([...profileIdsFromExisting, ...profileIdsFromChanges])];
+  )];
 
   const profileToPermSetId = new Map<string, string>();
   if (allProfileIds.length > 0) {

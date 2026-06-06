@@ -136,7 +136,7 @@ export async function saveSnapshots(snapshots: FLSSnapshot[]): Promise<void> {
   const settings = await getSettings();
   const existing = await loadSnapshots();
   const combined = [...existing, ...snapshots];
-  const cap = Math.max(settings.maxSnapshots, combined.length);
+  const cap = settings.maxSnapshots * 2;
   const trimmed = combined.length > cap ? combined.slice(combined.length - cap) : combined;
   await snapshotsItem.setValue(trimmed);
 }
@@ -310,8 +310,19 @@ function isValidSnapshot(obj: unknown): obj is FLSSnapshot {
     typeof s.capturedAt === 'string' &&
     typeof s.objectApiName === 'string' &&
     typeof s.fieldApiName === 'string' &&
-    typeof s.org === 'object' &&
-    Array.isArray(s.permissions)
+    typeof s.org === 'object' && s.org !== null &&
+    Array.isArray(s.permissions) &&
+    (s.permissions as unknown[]).every((p: unknown) => {
+      if (typeof p !== 'object' || p === null) return false;
+      const r = p as Record<string, unknown>;
+      return (
+        typeof r.id === 'string' &&
+        typeof r.name === 'string' &&
+        typeof r.label === 'string' &&
+        typeof r.permissionsRead === 'boolean' &&
+        typeof r.permissionsEdit === 'boolean'
+      );
+    })
   );
 }
 

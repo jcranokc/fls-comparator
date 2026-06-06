@@ -162,6 +162,23 @@ function EntryCard({ entry, onRolledBack }: EntryCardProps) {
         </div>
       </button>
 
+      {/* Persistent rollback error — visible even when collapsed */}
+      {rollError && !entry.rolledBack && (
+        <div class="mx-3 mb-2 px-2.5 py-1.5 rounded-md bg-rose-500/10 border border-rose-500/20
+                    flex items-center justify-between gap-2">
+          <p class="text-[11px] text-rose-400 flex-1">{rollError}</p>
+          <button
+            onClick={() => setRollError(null)}
+            class="text-rose-400/60 hover:text-rose-400 transition-colors flex-shrink-0"
+            aria-label="Dismiss"
+          >
+            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      )}
+
       {/* Expanded body */}
       {expanded && (
         <div class="px-3 pb-3 border-t border-slate-700/60">
@@ -170,9 +187,7 @@ function EntryCard({ entry, onRolledBack }: EntryCardProps) {
           {/* Rollback controls */}
           {!entry.rolledBack && (
             <div class="mt-3">
-              {rollError && (
-                <p class="text-[11px] text-rose-400 mb-2">{rollError}</p>
-              )}
+              {/* rollError is shown persistently above the card, not duplicated here */}
               {confirming ? (
                 <div class="flex items-center gap-2">
                   <p class="text-[11px] text-slate-400 flex-1">

@@ -72,6 +72,7 @@ export function FieldPicker({ onFieldSelect, disabled = false }: FieldPickerProp
   const [objectDropdownOpen, setObjectDropdownOpen] = useState(false);
   const [fieldDropdownOpen, setFieldDropdownOpen] = useState(false);
   const [error, setError] = useState('');
+  const [retryKey, setRetryKey] = useState(0);
 
   const objectDropdownRef = useRef<HTMLDivElement>(null);
   const fieldDropdownRef = useRef<HTMLDivElement>(null);
@@ -116,7 +117,7 @@ export function FieldPicker({ onFieldSelect, disabled = false }: FieldPickerProp
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [retryKey]);
 
   // Fetch fields when object changes
   useEffect(() => {
@@ -188,7 +189,13 @@ export function FieldPicker({ onFieldSelect, disabled = false }: FieldPickerProp
           <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
           </svg>
-          {error}
+          <span class="flex-1">{error}</span>
+          <button
+            onClick={() => { setError(''); setRetryKey(k => k + 1); }}
+            class="underline hover:no-underline flex-shrink-0"
+          >
+            Retry
+          </button>
         </div>
       )}
 

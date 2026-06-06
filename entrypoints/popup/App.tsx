@@ -7,7 +7,7 @@ import { useState, useEffect, useCallback } from 'preact/hooks';
 import type { FLSSnapshot, DiffResult } from '../../lib/api/types';
 import { getSession, isOnSalesforcePage } from '../../lib/api/session';
 import { fetchFLS } from '../../lib/api/salesforce';
-import { saveSnapshot, findLastSnapshot } from '../../lib/store/snapshots';
+import { saveSnapshot, findLastSnapshot, loadSnapshots } from '../../lib/store/snapshots';
 import { computeDiff, isDeadField } from '../../lib/utils/diff';
 import { formatFieldLabel, formatTimestamp, buildFieldSetupUrl, generateId } from '../../lib/utils/format';
 import type { ApplyChange } from '../../lib/api/salesforce';
@@ -43,6 +43,9 @@ export function App() {
   const [lastSnapshot, setLastSnapshot] = useState<FLSSnapshot | null>(null);
   const [lastSnapshotDismissed, setLastSnapshotDismissed] = useState(false);
 
+  // Saved snapshots — tracked so we can detect when currentSnapshot has been deleted
+  const [snapshots, setSnapshots] = useState<FLSSnapshot[]>([]);
+
   // Apply state
   const [applyChanges, setApplyChanges] = useState<ApplyChange[] | null>(null);
   const [applySourceSnapshot, setApplySourceSnapshot] = useState<FLSSnapshot | null>(null);
@@ -53,6 +56,27 @@ export function App() {
   useEffect(() => {
     isOnSalesforcePage().then(setIsSalesforcePage);
   }, []);
+
+  // Fix 4: Load snapshots on mount and keep them in sync via storage change events.
+  // This allows us to detect when currentSnapshot has been deleted from the Snapshots tab.
+  useEffect(() => {
+    loadSnapshots().then(setSnapshots).catch(() => {});
+
+    const onChanged = (changes: Record<string, { newValue?: unknown }>) => {
+      if (changes['fls_snapshots']) {
+        loadSnapshots().then(setSnapshots).catch(() => {});
+      }
+    };
+    browser.storage.local.onChanged.addListener(onChanged);
+    return () => browser.storage.local.onChanged.removeListener(onChanged);
+  }, []);
+
+  // Fix 4: When the snapshot list changes, clear currentSnapshot if it was deleted
+  useEffect(() => {
+    if (currentSnapshot && !snapshots.find(s => s.id === currentSnapshot.id)) {
+      setCurrentSnapshot(null);
+    }
+  }, [snapshots]);
 
   // Compute diff when comparing two snapshots
   useEffect(() => {
@@ -396,7 +420,7 @@ export function App() {
             newEdit: c.newEdit,
           }))}
           onConfirm={handleConfirmApply}
-          onCancel={() => setApplyChanges(null)}
+          onCancel={applyLoading ? () => {} : () => setApplyChanges(null)}
           loading={applyLoading}
         />
       )}

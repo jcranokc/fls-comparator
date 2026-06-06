@@ -71,10 +71,10 @@ function computeRowStatus(
 ): DiffStatus {
   if (src && !tgt) return 'MISSING_IN_TARGET';
   if (!src && tgt) return 'NEW_IN_TARGET';
-  if (!src || !tgt) return 'MISSING_IN_TARGET'; // shouldn't happen
 
-  const readDiffers = src.permissionsRead !== tgt.permissionsRead;
-  const editDiffers = src.permissionsEdit !== tgt.permissionsEdit;
+  // Both non-null guaranteed: allNames only contains names present in at least one map
+  const readDiffers = src!.permissionsRead !== tgt!.permissionsRead;
+  const editDiffers = src!.permissionsEdit !== tgt!.permissionsEdit;
 
   if (readDiffers && editDiffers) return 'BOTH_DIFFER';
   if (readDiffers) return 'READ_DIFFERS';
@@ -100,6 +100,7 @@ function buildPermissionMap(
  * Such a field is effectively invisible to all users — a common misconfiguration.
  */
 export function isDeadField(permissions: FieldPermissionRecord[]): boolean {
+  // An empty array means the field hasn't been fetched yet — don't classify it as dead.
   if (permissions.length === 0) return false;
   return permissions.every(p => !p.permissionsRead);
 }
@@ -112,8 +113,13 @@ export function filterDifferencesOnly(result: DiffResult): DiffResult {
   return {
     rows,
     summary: {
-      ...result.summary,
       total: rows.length,
+      matching: 0,
+      differing: rows.filter(r =>
+        r.status === 'READ_DIFFERS' || r.status === 'EDIT_DIFFERS' || r.status === 'BOTH_DIFFER'
+      ).length,
+      missingInTarget: rows.filter(r => r.status === 'MISSING_IN_TARGET').length,
+      newInTarget: rows.filter(r => r.status === 'NEW_IN_TARGET').length,
     },
   };
 }

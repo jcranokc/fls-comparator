@@ -21,6 +21,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [orgs, setOrgs] = useState<Array<{ org: OrgContext; snapshotCount: number }>>([]);
   const [orgLabelDraft, setOrgLabelDraft] = useState<Record<string, string>>({});
   const [orgLabelSaved, setOrgLabelSaved] = useState<Record<string, boolean>>({});
+  const [orgLabelError, setOrgLabelError] = useState<Record<string, string>>({});
 
   // Load settings and unique orgs on mount
   useEffect(() => {
@@ -60,7 +61,9 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       setOrgLabelSaved(prev => ({ ...prev, [orgId]: true }));
       setTimeout(() => setOrgLabelSaved(prev => ({ ...prev, [orgId]: false })), 2000);
     } catch (err) {
-      console.error('[SettingsPanel] Failed to save org label:', err);
+      const msg = err instanceof Error ? err.message : 'Save failed';
+      setOrgLabelError(prev => ({ ...prev, [orgId]: msg }));
+      setTimeout(() => setOrgLabelError(prev => ({ ...prev, [orgId]: '' })), 4000);
     }
   };
 
@@ -229,6 +232,9 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                       ) : 'Save'}
                     </button>
                   </div>
+                  {orgLabelError[org.orgId] && (
+                    <p class="mt-1 text-[11px] text-rose-400">{orgLabelError[org.orgId]}</p>
+                  )}
                 </div>
               ))}
             </div>

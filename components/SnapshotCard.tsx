@@ -9,8 +9,8 @@ interface SnapshotCardProps {
   onBulkApply?: (snapshot: FLSSnapshot) => void;
   onExport?: (snapshot: FLSSnapshot) => void;
   onDelete?: (snapshot: FLSSnapshot) => void;
-  onRename?: (id: string, newLabel: string) => void;
-  onUpdateOrgLabel?: (snapshot: FLSSnapshot, newOrgLabel: string) => void;
+  onRename?: (id: string, newLabel: string) => Promise<void> | void;
+  onUpdateOrgLabel?: (snapshot: FLSSnapshot, newOrgLabel: string) => Promise<void> | void;
   selected?: boolean;
 }
 
@@ -62,14 +62,19 @@ export function SnapshotCard({
     setIsEditing(true);
   }, [snapshot.label]);
 
-  const handleLabelSave = useCallback(() => {
+  const handleLabelSave = useCallback(async () => {
     const trimmed = editLabel.trim();
     if (trimmed && trimmed !== snapshot.label) {
-      onRename?.(snapshot.id, trimmed);
+      try {
+        await onRename?.(snapshot.id, trimmed);
+        setIsEditing(false);
+      } catch {
+        // keep edit UI open so the user can retry
+      }
     } else {
       setEditLabel(snapshot.label);
+      setIsEditing(false);
     }
-    setIsEditing(false);
   }, [editLabel, snapshot.label, snapshot.id, onRename]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
@@ -80,9 +85,13 @@ export function SnapshotCard({
     }
   }, [snapshot.label, handleLabelSave]);
 
-  const handleOrgLabelSave = useCallback(() => {
-    onUpdateOrgLabel?.(snapshot, editOrgLabel.trim());
-    setIsEditingOrg(false);
+  const handleOrgLabelSave = useCallback(async () => {
+    try {
+      await onUpdateOrgLabel?.(snapshot, editOrgLabel.trim());
+      setIsEditingOrg(false);
+    } catch {
+      // keep edit UI open so the user can retry
+    }
   }, [editOrgLabel, snapshot, onUpdateOrgLabel]);
 
   const handleOrgKeyDown = useCallback((e: KeyboardEvent) => {
