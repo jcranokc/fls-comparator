@@ -1,8 +1,9 @@
 # Salesforce FLS Comparator Expanded
 
-A Firefox/Zen Browser extension for Salesforce administrators and developers to capture, compare, and apply Field-Level Security (FLS) settings across fields and organisations — entirely in-browser, with no external server.
+A browser extension for Firefox, Zen Browser, and Chrome for Salesforce administrators and developers to capture, compare, and apply Field-Level Security (FLS) settings across fields and organisations — entirely in-browser, with no external server.
 
 [![Firefox Add-on](https://img.shields.io/badge/Firefox-Add--on-orange?logo=firefox)](https://addons.mozilla.org/en-US/firefox/addon/salesforce-fls-comparator/)
+[![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-blue?logo=googlechrome)](https://chrome.google.com/webstore)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ---
@@ -26,6 +27,9 @@ Salesforce's built-in FLS management requires navigating to each field individua
 
 ### Firefox / Zen Browser
 Install from the [Firefox Add-ons page](https://addons.mozilla.org/en-US/firefox/addon/salesforce-fls-comparator/).
+
+### Chrome
+Install from the [Chrome Web Store](https://chrome.google.com/webstore).
 
 ### Load Unpacked (Development)
 1. Clone the repo and run `npm install && npm run build:firefox`
@@ -158,7 +162,7 @@ All network traffic goes only to the user's own Salesforce org. No data is sent 
 ## Requirements
 
 - An active Salesforce session in the browser (any edition — [free Developer Edition](https://developer.salesforce.com/signup) works)
-- Firefox 109+ / Zen Browser, or any Chromium browser (Chrome build)
+- Firefox 109+ / Zen Browser, or Chrome / any Chromium browser
 - Salesforce Lightning Experience (Classic has partial support via the content script button)
 
 ---
