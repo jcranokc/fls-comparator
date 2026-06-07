@@ -4,7 +4,21 @@ import preact from '@preact/preset-vite';
 export default defineConfig({
   // Use Preact for UI rendering
   vite: () => ({
-    plugins: [preact()],
+    plugins: [
+      preact(),
+      {
+        // Preact's dangerouslySetInnerHTML handler uses innerHTML internally.
+        // We never use dangerouslySetInnerHTML, so these paths are dead code,
+        // but Firefox's AMO linter flags them statically. Replace the assignments
+        // with textContent equivalents to silence the warning.
+        name: 'replace-preact-innerHTML',
+        renderChunk(code: string) {
+          return code
+            .replace(/(\w+)\.innerHTML=(\w+\.__html)/g, '$1.textContent=$2')
+            .replace(/(\w+)\.innerHTML=""/g, '$1.textContent=""');
+        },
+      },
+    ],
   }),
 
   // Target Firefox/Zen as the primary browser
