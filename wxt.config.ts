@@ -32,10 +32,12 @@ export default defineConfig({
     browser_specific_settings: {
       gecko: {
         id: 'fls-comparator@ijm-tools',
-        strict_min_version: '109.0',
+        strict_min_version: '140.0',
         // Required by Firefox for new extensions; this extension collects no data
         ...({ data_collection_permissions: { required: ['none'], optional: [] } } as object),
       },
+      // data_collection_permissions requires Firefox for Android 142+
+      ...({ gecko_android: { strict_min_version: '142.0' } } as object),
     },
 
     sidebar_action: {
