@@ -33,6 +33,8 @@ export default defineConfig({
       gecko: {
         id: 'fls-comparator@ijm-tools',
         strict_min_version: '109.0',
+        // Required by Firefox for new extensions; this extension collects no data
+        ...({ data_collection_permissions: { required: [], optional: [] } } as object),
       },
     },
 
