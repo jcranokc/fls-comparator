@@ -165,6 +165,21 @@ All network traffic goes only to the user's own Salesforce org. No data is sent 
 - Firefox 109+ / Zen Browser, or Chrome / any Chromium browser
 - Salesforce Lightning Experience (Classic has partial support via the content script button)
 
+### Required Salesforce Permissions
+
+| Action | Required Permission |
+|---|---|
+| Fetch / view FLS | **View Setup and Configuration** or **Customize Application** |
+| Apply / write FLS | **Customize Application** |
+
+System Administrators have both permissions by default. If your profile or permission set does not include them, the extension will show an error message when you attempt the relevant action.
+
+**What you'll see if permissions are missing:**
+
+- **No API access** (e.g. Experience Cloud / Community users, or profiles without "API Enabled") — the extension shows `"Your Salesforce session has expired"` or a similar authentication error. If you see this on a page where you are definitely logged in, it means your profile does not have API access enabled.
+- **Can view Setup but not modify it** — fetching FLS works normally. Clicking Apply will show an error from Salesforce indicating the write was rejected (`INSUFFICIENT_ACCESS_OR_READONLY`).
+- **Read-only object or managed-package field** — individual rows that cannot be modified are silently skipped during Apply; the confirmation summary shows how many rows were written versus skipped.
+
 ---
 
 ## License
