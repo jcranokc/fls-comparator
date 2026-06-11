@@ -258,6 +258,25 @@ async function restQueryAll<T>(session: SalesforceSession, soql: string): Promis
   return records;
 }
 
+/**
+ * Run a Tooling API SOQL query and automatically follow nextRecordsUrl pages.
+ */
+async function toolingQueryAll<T>(session: SalesforceSession, soql: string): Promise<T[]> {
+  let result = await toolingQuery<T>(session, soql);
+  const records: T[] = [...result.records];
+  const MAX_PAGES = 50;
+  let pages = 0;
+  while (!result.done && result.nextRecordsUrl) {
+    if (++pages >= MAX_PAGES) {
+      console.warn('[FLS Comparator] toolingQueryAll: reached page limit, results truncated');
+      break;
+    }
+    result = await restGet<ToolingQueryResponse<T>>(session, result.nextRecordsUrl);
+    records.push(...result.records);
+  }
+  return records;
+}
+
 // ─── FLS Fetch ────────────────────────────────────────────────────────────────
 
 /**
@@ -564,7 +583,7 @@ export async function applyFLSChanges(
       AND Field = '${encodeSOQL(fieldName)}'
   `.replace(/\s+/g, ' ').trim();
 
-  const existingFpRecords = await restQueryAll<{ Id: string; ParentId: string }>(session, idSoql);
+  const existingFpRecords = await toolingQueryAll<{ Id: string; ParentId: string }>(session, idSoql);
 
   // Build two maps: one by ParentId directly, one by backing PermSet→Profile mapping
   // (FieldPermissions.ParentId can be either a Profile ID or a backing PermissionSet ID
@@ -608,7 +627,7 @@ export async function applyFLSChanges(
     if (fpId) {
       subrequests.push({
         method: 'PATCH' as const,
-        url: `/services/data/v${apiVersion}/sobjects/FieldPermissions/${fpId}`,
+        url: `/services/data/v${apiVersion}/tooling/sobjects/FieldPermissions/${fpId}`,
         referenceId: `update_${index}`,
         body: {
           PermissionsRead: change.newRead,
@@ -620,7 +639,7 @@ export async function applyFLSChanges(
       // since FieldPermissions.ParentId must always be a PermissionSet ID, never a Profile ID.
       subrequests.push({
         method: 'POST' as const,
-        url: `/services/data/v${apiVersion}/sobjects/FieldPermissions`,
+        url: `/services/data/v${apiVersion}/tooling/sobjects/FieldPermissions`,
         referenceId: `create_${index}`,
         body: {
           ParentId: parentId,
@@ -653,7 +672,7 @@ export async function applyFLSChanges(
         if (!original || original.method !== 'POST') continue;
         retries.push({
           method: 'PATCH',
-          url: `/services/data/v${apiVersion}/sobjects/FieldPermissions/${existingId}`,
+          url: `/services/data/v${apiVersion}/tooling/sobjects/FieldPermissions/${existingId}`,
           referenceId: `retry_${dup.referenceId}`,
           body: original.body,
         });

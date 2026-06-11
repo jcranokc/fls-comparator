@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'preact/hooks';
-import type { ApplyHistoryEntry } from '../lib/api/types';
+import type { ApplyHistoryEntry, BulkApplyFieldEntry } from '../lib/api/types';
 import type { ApplyChange } from '../lib/api/salesforce';
-import { applyFLSChanges } from '../lib/api/salesforce';
+import { applyFLSChanges, computeApplyChanges } from '../lib/api/salesforce';
 import { loadHistory, clearHistory, saveHistoryEntry, markEntryRolledBack } from '../lib/store/history';
+import { loadSnapshots } from '../lib/store/snapshots';
 import { getSession } from '../lib/api/session';
 import { generateId } from '../lib/utils/format';
 import { formatTimestamp, formatFullTimestamp } from '../lib/utils/format';
@@ -14,7 +15,7 @@ function permLabel(read: boolean, edit: boolean): string {
   return 'none';
 }
 
-function ChangeTable({ entry }: { entry: ApplyHistoryEntry }) {
+function ChangeTable({ changes }: { changes: { permissionSetId: string; permissionSetName: string; type: 'Profile' | 'PermissionSet'; wasRead: boolean; wasEdit: boolean; nowRead: boolean; nowEdit: boolean }[] }) {
   return (
     <table class="w-full text-xs border-collapse mt-2">
       <thead>
@@ -25,7 +26,7 @@ function ChangeTable({ entry }: { entry: ApplyHistoryEntry }) {
         </tr>
       </thead>
       <tbody>
-        {entry.changes.map(c => (
+        {changes.map(c => (
           <tr key={c.permissionSetId} class="border-t border-slate-700/60">
             <td class="py-1 pr-3 text-slate-300 truncate max-w-0 w-4/6">
               <span class="block truncate" title={c.permissionSetName}>{c.permissionSetName}</span>
@@ -52,6 +53,18 @@ function ChangeTable({ entry }: { entry: ApplyHistoryEntry }) {
   );
 }
 
+const STATUS_ICON: Record<BulkApplyFieldEntry['status'], string> = {
+  applied: '✓',
+  error: '✕',
+  'no-changes': '—',
+};
+
+const STATUS_COLOR: Record<BulkApplyFieldEntry['status'], string> = {
+  applied: 'text-emerald-400',
+  error: 'text-rose-400',
+  'no-changes': 'text-slate-500',
+};
+
 interface EntryCardProps {
   entry: ApplyHistoryEntry;
   onRolledBack: () => void;
@@ -62,6 +75,10 @@ function EntryCard({ entry, onRolledBack }: EntryCardProps) {
   const [confirming, setConfirming] = useState(false);
   const [rolling, setRolling] = useState(false);
   const [rollError, setRollError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  const isBulk = !!(entry.targetFields && entry.targetFields.length > 0);
 
   const handleRollback = useCallback(async () => {
     setRolling(true);
@@ -70,48 +87,208 @@ function EntryCard({ entry, onRolledBack }: EntryCardProps) {
       const session = await getSession();
       if (!session) throw new Error('Could not get Salesforce session.');
 
-      const rollbackChanges: ApplyChange[] = entry.changes.map(c => ({
-        permissionSetId: c.permissionSetId,
-        permissionSetName: c.permissionSetName,
-        field: `${entry.targetObjectApiName}.${entry.targetFieldApiName}`,
-        type: c.type,
-        currentRead: c.nowRead,
-        currentEdit: c.nowEdit,
-        newRead: c.wasRead,
-        newEdit: c.wasEdit,
-      }));
+      if (isBulk && entry.targetFields) {
+        // Rollback all applied fields in the bulk entry
+        let rollbackId = generateId();
+        const allReversedChanges: BulkApplyFieldEntry[] = [];
 
-      await applyFLSChanges(session, rollbackChanges);
+        for (const field of entry.targetFields) {
+          if (field.status !== 'applied' || field.changes.length === 0) continue;
 
-      const rollbackId = generateId();
-      await saveHistoryEntry({
-        id: rollbackId,
-        appliedAt: new Date().toISOString(),
-        sourceLabel: `Rollback of ${entry.targetObjectApiName}.${entry.targetFieldApiName}`,
-        sourceObjectApiName: entry.targetObjectApiName,
-        sourceFieldApiName: entry.targetFieldApiName,
-        targetObjectApiName: entry.targetObjectApiName,
-        targetFieldApiName: entry.targetFieldApiName,
-        org: entry.org,
-        changes: entry.changes.map(c => ({
-          ...c,
-          wasRead: c.nowRead,
-          wasEdit: c.nowEdit,
-          nowRead: c.wasRead,
-          nowEdit: c.wasEdit,
-        })),
-      });
-      await markEntryRolledBack(entry.id, rollbackId);
+          const rollbackChanges: ApplyChange[] = field.changes.map(c => ({
+            permissionSetId: c.permissionSetId,
+            permissionSetName: c.permissionSetName,
+            field: `${field.targetObjectApiName}.${field.targetFieldApiName}`,
+            type: c.type,
+            currentRead: c.nowRead,
+            currentEdit: c.nowEdit,
+            newRead: c.wasRead,
+            newEdit: c.wasEdit,
+          }));
+
+          try {
+            await applyFLSChanges(session, rollbackChanges);
+          } catch (err) {
+            // Continue rolling back other fields even if one fails
+            console.error(`Rollback failed for ${field.targetObjectApiName}.${field.targetFieldApiName}:`, err);
+          }
+
+          allReversedChanges.push({
+            targetObjectApiName: field.targetObjectApiName,
+            targetFieldApiName: field.targetFieldApiName,
+            status: 'applied',
+            changes: field.changes.map(c => ({
+              ...c,
+              wasRead: c.nowRead,
+              wasEdit: c.nowEdit,
+              nowRead: c.wasRead,
+              nowEdit: c.wasEdit,
+            })),
+          });
+        }
+
+        if (allReversedChanges.length > 0) {
+          await saveHistoryEntry({
+            id: rollbackId,
+            appliedAt: new Date().toISOString(),
+            sourceLabel: `Rollback of ${entry.sourceLabel}`,
+            sourceObjectApiName: entry.sourceObjectApiName,
+            sourceFieldApiName: entry.sourceFieldApiName,
+            targetObjectApiName: entry.targetObjectApiName,
+            targetFieldApiName: entry.targetFieldApiName,
+            org: entry.org,
+            changes: allReversedChanges[0]?.changes ?? [],
+            targetFields: allReversedChanges,
+          });
+
+          await markEntryRolledBack(entry.id, rollbackId);
+        }
+      } else {
+        // Single-field rollback (existing behavior)
+        const rollbackChanges: ApplyChange[] = entry.changes.map(c => ({
+          permissionSetId: c.permissionSetId,
+          permissionSetName: c.permissionSetName,
+          field: `${entry.targetObjectApiName}.${entry.targetFieldApiName}`,
+          type: c.type,
+          currentRead: c.nowRead,
+          currentEdit: c.nowEdit,
+          newRead: c.wasRead,
+          newEdit: c.wasEdit,
+        }));
+
+        await applyFLSChanges(session, rollbackChanges);
+
+        const rollbackId = generateId();
+        await saveHistoryEntry({
+          id: rollbackId,
+          appliedAt: new Date().toISOString(),
+          sourceLabel: `Rollback of ${entry.targetObjectApiName}.${entry.targetFieldApiName}`,
+          sourceObjectApiName: entry.targetObjectApiName,
+          sourceFieldApiName: entry.targetFieldApiName,
+          targetObjectApiName: entry.targetObjectApiName,
+          targetFieldApiName: entry.targetFieldApiName,
+          org: entry.org,
+          changes: entry.changes.map(c => ({
+            ...c,
+            wasRead: c.nowRead,
+            wasEdit: c.nowEdit,
+            nowRead: c.wasRead,
+            nowEdit: c.wasEdit,
+          })),
+        });
+        await markEntryRolledBack(entry.id, rollbackId);
+      }
+
       onRolledBack();
     } catch (err) {
       setRollError(err instanceof Error ? err.message : 'Rollback failed');
       setRolling(false);
     }
+  }, [entry, isBulk, onRolledBack]);
+
+  const handleRetry = useCallback(async () => {
+    if (!entry.targetFields) return;
+    setRetrying(true);
+    setRetryError(null);
+
+    try {
+      const session = await getSession();
+      if (!session) throw new Error('Could not get Salesforce session.');
+
+      // Try to find the source snapshot
+      const snapshots = await loadSnapshots();
+      const sourceSnapshot = snapshots.find(
+        s => s.label === entry.sourceLabel &&
+             s.objectApiName === entry.sourceObjectApiName &&
+             s.fieldApiName === entry.sourceFieldApiName
+      );
+
+      if (!sourceSnapshot) {
+        throw new Error('Source snapshot not found — it may have been deleted.');
+      }
+
+      const resultFields: BulkApplyFieldEntry[] = [];
+      const errorIndices = entry.targetFields
+        .map((f, i) => f.status === 'error' ? i : -1)
+        .filter(i => i !== -1);
+
+      for (const i of errorIndices) {
+        const field = entry.targetFields[i];
+        try {
+          const changes = await computeApplyChanges(
+            session, sourceSnapshot,
+            field.targetObjectApiName, field.targetFieldApiName
+          );
+          if (changes.length === 0) {
+            resultFields.push({
+              ...field,
+              status: 'no-changes' as const,
+              error: undefined,
+              changes: [],
+            });
+          } else {
+            const applyResult = await applyFLSChanges(session, changes);
+            const actuallyChanged = changes.filter(c => c.currentRead !== c.newRead || c.currentEdit !== c.newEdit);
+            resultFields.push({
+              ...field,
+              status: 'applied' as const,
+              error: undefined,
+              changes: actuallyChanged.map(c => ({
+                permissionSetId: c.permissionSetId,
+                permissionSetName: c.permissionSetName,
+                type: c.type,
+                wasRead: c.currentRead,
+                wasEdit: c.currentEdit,
+                nowRead: c.newRead,
+                nowEdit: c.newEdit,
+              })),
+            });
+          }
+        } catch (err) {
+          resultFields.push({
+            ...field,
+            status: 'error' as const,
+            error: err instanceof Error ? err.message : 'Retry failed',
+          });
+        }
+      }
+
+      // Build updated targetFields: non-error fields as-is, error fields replaced with retry result
+      const updatedTargetFields = entry.targetFields.map(f => {
+        const retried = resultFields.find(
+          r => r.targetObjectApiName === f.targetObjectApiName &&
+               r.targetFieldApiName === f.targetFieldApiName
+        );
+        return retried ?? f;
+      });
+
+      // Save a new history entry for the retry
+      await saveHistoryEntry({
+        id: generateId(),
+        appliedAt: new Date().toISOString(),
+        sourceLabel: `${entry.sourceLabel} (retry)`,
+        sourceObjectApiName: entry.sourceObjectApiName,
+        sourceFieldApiName: entry.sourceFieldApiName,
+        targetObjectApiName: entry.targetObjectApiName,
+        targetFieldApiName: entry.targetFieldApiName,
+        org: entry.org,
+        changes: resultFields.find(f => f.status === 'applied')?.changes ?? [],
+        targetFields: updatedTargetFields,
+      });
+
+      onRolledBack();
+    } catch (err) {
+      setRetryError(err instanceof Error ? err.message : 'Retry failed');
+      setRetrying(false);
+    }
   }, [entry, onRolledBack]);
 
   const isRollback = entry.sourceLabel.startsWith('Rollback of ');
+  const retryLabel = entry.sourceLabel.endsWith('(retry)');
   const sameField = entry.sourceObjectApiName === entry.targetObjectApiName &&
                     entry.sourceFieldApiName === entry.targetFieldApiName;
+  const errorCount = entry.targetFields?.filter(f => f.status === 'error').length ?? 0;
+  const appliedCount = entry.targetFields?.filter(f => f.status === 'applied').length ?? 0;
 
   return (
     <div class={`rounded-lg border ${entry.rolledBack ? 'border-slate-700/40 opacity-60' : 'border-slate-700'} bg-slate-800/60`}>
@@ -135,10 +312,22 @@ function EntryCard({ entry, onRolledBack }: EntryCardProps) {
                 ROLLBACK
               </span>
             )}
+            {retryLabel && (
+              <span class="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-400 font-medium flex-shrink-0">
+                RETRY
+              </span>
+            )}
+            {isBulk && (
+              <span class="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-400 font-medium flex-shrink-0">
+                BULK
+              </span>
+            )}
             <span class="text-xs font-mono text-slate-200 truncate">
-              {sameField
-                ? `${entry.targetObjectApiName}.${entry.targetFieldApiName}`
-                : `${entry.sourceObjectApiName}.${entry.sourceFieldApiName} → ${entry.targetObjectApiName}.${entry.targetFieldApiName}`}
+              {isBulk
+                ? `${entry.sourceLabel} → ${appliedCount + (entry.targetFields?.filter(f => f.status === 'error').length ?? 0)} fields`
+                : sameField
+                  ? `${entry.targetObjectApiName}.${entry.targetFieldApiName}`
+                  : `${entry.sourceObjectApiName}.${entry.sourceFieldApiName} → ${entry.targetObjectApiName}.${entry.targetFieldApiName}`}
             </span>
           </div>
           <div class="flex items-center gap-2 mt-0.5">
@@ -149,9 +338,23 @@ function EntryCard({ entry, onRolledBack }: EntryCardProps) {
               {formatTimestamp(entry.appliedAt)}
             </span>
             <span class="text-[11px] text-slate-600">·</span>
-            <span class="text-[11px] text-slate-500">
-              {entry.changes.length} change{entry.changes.length !== 1 ? 's' : ''}
-            </span>
+            {isBulk ? (
+              <>
+                <span class="text-[11px] text-slate-500">
+                  {entry.targetFields!.length} field{entry.targetFields!.length !== 1 ? 's' : ''}
+                </span>
+                {errorCount > 0 && (
+                  <>
+                    <span class="text-[11px] text-slate-600">·</span>
+                    <span class="text-[11px] text-rose-400">{errorCount} error{errorCount !== 1 ? 's' : ''}</span>
+                  </>
+                )}
+              </>
+            ) : (
+              <span class="text-[11px] text-slate-500">
+                {entry.changes.length} change{entry.changes.length !== 1 ? 's' : ''}
+              </span>
+            )}
             {entry.rolledBack && (
               <>
                 <span class="text-[11px] text-slate-600">·</span>
@@ -162,13 +365,13 @@ function EntryCard({ entry, onRolledBack }: EntryCardProps) {
         </div>
       </button>
 
-      {/* Persistent rollback error — visible even when collapsed */}
-      {rollError && !entry.rolledBack && (
+      {/* Persistent error — visible even when collapsed */}
+      {(rollError || retryError) && !entry.rolledBack && (
         <div class="mx-3 mb-2 px-2.5 py-1.5 rounded-md bg-rose-500/10 border border-rose-500/20
                     flex items-center justify-between gap-2">
-          <p class="text-[11px] text-rose-400 flex-1">{rollError}</p>
+          <p class="text-[11px] text-rose-400 flex-1">{rollError ?? retryError}</p>
           <button
-            onClick={() => setRollError(null)}
+            onClick={() => { setRollError(null); setRetryError(null); }}
             class="text-rose-400/60 hover:text-rose-400 transition-colors flex-shrink-0"
             aria-label="Dismiss"
           >
@@ -182,16 +385,53 @@ function EntryCard({ entry, onRolledBack }: EntryCardProps) {
       {/* Expanded body */}
       {expanded && (
         <div class="px-3 pb-3 border-t border-slate-700/60">
-          <ChangeTable entry={entry} />
+          {isBulk && entry.targetFields ? (
+            /* Bulk entry view */
+            <div class="space-y-2 mt-2">
+              {entry.targetFields.map((field, i) => (
+                <div key={`${field.targetObjectApiName}.${field.targetFieldApiName}`}
+                     class="rounded-md bg-slate-800 border border-slate-700/80">
+                  <div class="flex items-center gap-2 px-2.5 py-2">
+                    <span class={`text-sm w-4 text-center font-mono flex-shrink-0 ${STATUS_COLOR[field.status]}`}>
+                      {STATUS_ICON[field.status]}
+                    </span>
+                    <span class="text-xs font-mono text-slate-300 truncate flex-1">
+                      {field.targetObjectApiName}.{field.targetFieldApiName}
+                    </span>
+                    {field.status === 'applied' && (
+                      <span class="text-[11px] text-emerald-400 flex-shrink-0">
+                        {field.changes.length} change{field.changes.length !== 1 ? 's' : ''}
+                      </span>
+                    )}
+                    {field.status === 'error' && field.error && (
+                      <span class="text-[11px] text-rose-400 truncate max-w-[140px] flex-shrink-0" title={field.error}>
+                        {field.error.slice(0, 50)}
+                      </span>
+                    )}
+                    {field.status === 'no-changes' && (
+                      <span class="text-[11px] text-slate-500 flex-shrink-0">Already matches</span>
+                    )}
+                  </div>
+                  {field.changes.length > 0 && (
+                    <div class="border-t border-slate-700/60 px-2.5 pb-2">
+                      <ChangeTable changes={field.changes} />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            /* Single entry view */
+            <ChangeTable changes={entry.changes} />
+          )}
 
-          {/* Rollback controls */}
+          {/* Controls */}
           {!entry.rolledBack && (
-            <div class="mt-3">
-              {/* rollError is shown persistently above the card, not duplicated here */}
-              {confirming ? (
+            <div class="mt-3 space-y-2">
+              {rollError || retryError ? null : confirming ? (
                 <div class="flex items-center gap-2">
                   <p class="text-[11px] text-slate-400 flex-1">
-                    Revert {entry.targetObjectApiName}.{entry.targetFieldApiName} to its pre-apply state?
+                    {isBulk ? 'Revert all fields to their pre-apply state?' : `Revert ${entry.targetObjectApiName}.${entry.targetFieldApiName} to its pre-apply state?`}
                   </p>
                   <button
                     onClick={handleRollback}
@@ -215,12 +455,31 @@ function EntryCard({ entry, onRolledBack }: EntryCardProps) {
                   )}
                 </div>
               ) : (
-                <button
-                  onClick={() => setConfirming(true)}
-                  class="btn-secondary text-[11px] py-1 px-2.5"
-                >
-                  Rollback
-                </button>
+                <div class="flex items-center gap-2 flex-wrap">
+                  {errorCount > 0 && (
+                    <button
+                      onClick={handleRetry}
+                      disabled={retrying}
+                      class="btn-secondary text-[11px] py-1 px-2.5 disabled:opacity-50"
+                    >
+                      {retrying ? (
+                        <span class="flex items-center gap-1.5">
+                          <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                          </svg>
+                          Retrying…
+                        </span>
+                      ) : `Retry ${errorCount} failed`}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setConfirming(true)}
+                    class="btn-secondary text-[11px] py-1 px-2.5"
+                  >
+                    Rollback
+                  </button>
+                </div>
               )}
             </div>
           )}

@@ -196,6 +196,15 @@ export interface ApplyHistoryChange {
   nowEdit: boolean;
 }
 
+/** Per-field result within a bulk apply history entry */
+export interface BulkApplyFieldEntry {
+  targetObjectApiName: string;
+  targetFieldApiName: string;
+  status: 'applied' | 'error' | 'no-changes';
+  error?: string;
+  changes: ApplyHistoryChange[];
+}
+
 /** A single apply operation recorded to the audit log */
 export interface ApplyHistoryEntry {
   id: string;
@@ -208,6 +217,8 @@ export interface ApplyHistoryEntry {
   targetFieldApiName: string;
   org: OrgContext;
   changes: ApplyHistoryChange[];
+  /** For bulk apply — multiple target fields applied together */
+  targetFields?: BulkApplyFieldEntry[];
   /** True once this entry has been rolled back */
   rolledBack?: boolean;
   /** ID of the history entry that reversed this one */

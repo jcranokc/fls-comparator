@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'preact/hooks';
-import type { FLSSnapshot } from '../lib/api/types';
+import type { FLSSnapshot, BulkApplyFieldEntry } from '../lib/api/types';
 import { getSession } from '../lib/api/session';
 import { computeApplyChanges, applyFLSChanges } from '../lib/api/salesforce';
 import { saveHistoryEntry } from '../lib/store/history';
@@ -71,6 +71,8 @@ export function BulkApplyModal({ sourceSnapshot, onClose }: BulkApplyModalProps)
       return;
     }
 
+    const fieldResults: BulkApplyFieldEntry[] = [];
+
     for (const i of indices) {
       setTargetFields(prev =>
         prev.map((f, idx) => idx === i ? { ...f, status: 'applying' } : f)
@@ -82,33 +84,32 @@ export function BulkApplyModal({ sourceSnapshot, onClose }: BulkApplyModalProps)
           fields[i].objectName, fields[i].fieldName
         );
         if (changes.length === 0) {
+          fieldResults.push({
+            targetObjectApiName: fields[i].objectName,
+            targetFieldApiName: fields[i].fieldName,
+            status: 'no-changes',
+            changes: [],
+          });
           setTargetFields(prev =>
             prev.map((f, idx) => idx === i ? { ...f, status: 'no-changes' } : f)
           );
         } else {
           const applyResult = await applyFLSChanges(session, changes);
           const actuallyChanged = changes.filter(c => c.currentRead !== c.newRead || c.currentEdit !== c.newEdit);
-          if (actuallyChanged.length > 0) {
-            saveHistoryEntry({
-              id: generateId(),
-              appliedAt: new Date().toISOString(),
-              sourceLabel: sourceSnapshot.label,
-              sourceObjectApiName: sourceSnapshot.objectApiName,
-              sourceFieldApiName: sourceSnapshot.fieldApiName,
-              targetObjectApiName: fields[i].objectName,
-              targetFieldApiName: fields[i].fieldName,
-              org: sourceSnapshot.org,
-              changes: actuallyChanged.map(c => ({
-                permissionSetId: c.permissionSetId,
-                permissionSetName: c.permissionSetName,
-                type: c.type,
-                wasRead: c.currentRead,
-                wasEdit: c.currentEdit,
-                nowRead: c.newRead,
-                nowEdit: c.newEdit,
-              })),
-            }).catch(() => {});
-          }
+          fieldResults.push({
+            targetObjectApiName: fields[i].objectName,
+            targetFieldApiName: fields[i].fieldName,
+            status: 'applied',
+            changes: actuallyChanged.map(c => ({
+              permissionSetId: c.permissionSetId,
+              permissionSetName: c.permissionSetName,
+              type: c.type,
+              wasRead: c.currentRead,
+              wasEdit: c.currentEdit,
+              nowRead: c.newRead,
+              nowEdit: c.newEdit,
+            })),
+          });
           setTargetFields(prev =>
             prev.map((f, idx) => idx === i ? {
               ...f,
@@ -120,6 +121,13 @@ export function BulkApplyModal({ sourceSnapshot, onClose }: BulkApplyModalProps)
           );
         }
       } catch (err) {
+        fieldResults.push({
+          targetObjectApiName: fields[i].objectName,
+          targetFieldApiName: fields[i].fieldName,
+          status: 'error',
+          error: err instanceof Error ? err.message : 'Failed',
+          changes: [],
+        });
         setTargetFields(prev =>
           prev.map((f, idx) =>
             idx === i ? { ...f, status: 'error', error: err instanceof Error ? err.message : 'Failed' } : f
@@ -129,6 +137,23 @@ export function BulkApplyModal({ sourceSnapshot, onClose }: BulkApplyModalProps)
     }
 
     setApplying(false);
+
+    // Save a single grouped history entry for the bulk apply
+    if (fieldResults.length > 0) {
+      const first = fieldResults[0];
+      saveHistoryEntry({
+        id: generateId(),
+        appliedAt: new Date().toISOString(),
+        sourceLabel: sourceSnapshot.label,
+        sourceObjectApiName: sourceSnapshot.objectApiName,
+        sourceFieldApiName: sourceSnapshot.fieldApiName,
+        targetObjectApiName: first.targetObjectApiName,
+        targetFieldApiName: first.targetFieldApiName,
+        org: sourceSnapshot.org,
+        changes: first.status === 'applied' ? first.changes : [],
+        targetFields: fieldResults,
+      }).catch(() => {});
+    }
   }, [sourceSnapshot]);
 
   const handleApplyAll = useCallback(async () => {
