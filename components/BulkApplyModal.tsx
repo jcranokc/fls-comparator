@@ -40,6 +40,10 @@ const STATUS_COLOR: Record<TargetField['status'], string> = {
 export function BulkApplyModal({ sourceSnapshot, onClose }: BulkApplyModalProps) {
   const [targetFields, setTargetFields] = useState<TargetField[]>([]);
   const [pickerKey, setPickerKey] = useState(0);
+  const [lastObject, setLastObject] = useState(sourceSnapshot.objectApiName);
+  const [pasteInput, setPasteInput] = useState('');
+  const [pasteFeedback, setPasteFeedback] = useState<string | null>(null);
+  const [filterMode, setFilterMode] = useState<'all' | 'profiles' | 'permsets'>('all');
   const [applying, setApplying] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
 
@@ -49,22 +53,72 @@ export function BulkApplyModal({ sourceSnapshot, onClose }: BulkApplyModalProps)
       (objectName === sourceSnapshot.objectApiName && fieldName === sourceSnapshot.fieldApiName) ||
       targetFields.some(f => f.objectName === objectName && f.fieldName === fieldName)
     ) {
+      setLastObject(objectName);
       setPickerKey(k => k + 1);
       return;
     }
     setTargetFields(prev => [...prev, { objectName, fieldName, status: 'pending' }]);
-    setPickerKey(k => k + 1); // reset picker so user can add another
+    setLastObject(objectName);
+    setPickerKey(k => k + 1); // reset picker so user can add another field from same object
   }, [sourceSnapshot, targetFields]);
 
   const handleRemove = useCallback((index: number) => {
     setTargetFields(prev => prev.filter((_, i) => i !== index));
   }, []);
 
+  const handleParsePaste = useCallback(() => {
+    const raw = pasteInput.trim();
+    if (!raw) return;
+
+    // Split by comma or newline
+    const entries = raw.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
+    const validFormat = /^[A-Za-z]\w*\.[A-Za-z]\w*$/;
+    let added = 0;
+    let skipped = 0;
+
+    setTargetFields(prev => {
+      const next = [...prev];
+      for (const entry of entries) {
+        if (!validFormat.test(entry)) {
+          skipped++;
+          continue;
+        }
+        const dotIdx = entry.indexOf('.');
+        const objectName = entry.slice(0, dotIdx);
+        const fieldName = entry.slice(dotIdx + 1);
+
+        // Skip source field and duplicates
+        if (
+          (objectName === sourceSnapshot.objectApiName && fieldName === sourceSnapshot.fieldApiName) ||
+          next.some(f => f.objectName === objectName && f.fieldName === fieldName)
+        ) {
+          skipped++;
+          continue;
+        }
+        next.push({ objectName, fieldName, status: 'pending' });
+        added++;
+      }
+      return next;
+    });
+
+    if (added > 0 || skipped > 0) {
+      setPasteFeedback(added > 0
+        ? `Added ${added} field${added !== 1 ? 's' : ''}${skipped > 0 ? `, ${skipped} skipped (invalid or duplicate)` : ''}`
+        : `${skipped} skipped — invalid format or duplicate`);
+      setTimeout(() => setPasteFeedback(null), 3000);
+    }
+    setPasteInput('');
+  }, [pasteInput, sourceSnapshot]);
+
   const runApplyForIndices = useCallback(async (indices: number[], fields: TargetField[]) => {
     setApplying(true);
     setSessionError(null);
 
-    const session = await getSession();
+    // Use the source snapshot's org URL — matches how individual apply works
+    // in Panel.tsx (getSession(currentSnapshot.org.instanceUrl)).  Without this,
+    // getSession() may pick a different Salesforce tab / org when the sidebar
+    // is open as its own tab.
+    const session = await getSession(sourceSnapshot.org.instanceUrl);
     if (!session) {
       setSessionError('Could not get Salesforce session.');
       setApplying(false);
@@ -79,11 +133,34 @@ export function BulkApplyModal({ sourceSnapshot, onClose }: BulkApplyModalProps)
       );
 
       try {
-        const changes = await computeApplyChanges(
+        let allChanges = await computeApplyChanges(
           session, sourceSnapshot,
           fields[i].objectName, fields[i].fieldName
         );
-        if (changes.length === 0) {
+
+        // Diagnostic logging — helps trace bulk apply issues
+        console.log(`[FLS Bulk Apply] ${fields[i].objectName}.${fields[i].fieldName}: ${allChanges.length} total rows from computeApplyChanges`);
+        if (allChanges.length > 0) {
+          const diffs = allChanges.filter(c => c.currentRead !== c.newRead || c.currentEdit !== c.newEdit);
+          console.log(`[FLS Bulk Apply]   → ${diffs.length} rows differ, ${allChanges.length - diffs.length} already match`);
+          if (diffs.length === 0 && allChanges.length > 0) {
+            // Log a sample to help diagnose why everything looks the same
+            const sample = allChanges.slice(0, 3).map(c => `${c.permissionSetName}: current(R=${c.currentRead},E=${c.currentEdit}) new(R=${c.newRead},E=${c.newEdit})`);
+            console.log(`[FLS Bulk Apply]   Sample rows:`, sample);
+          }
+        }
+
+        if (filterMode === 'profiles') {
+          allChanges = allChanges.filter(c => c.type === 'Profile');
+        } else if (filterMode === 'permsets') {
+          allChanges = allChanges.filter(c => c.type === 'PermissionSet');
+        }
+        // Filter to only rows that actually differ — the individual apply flow
+        // does this via the ConfirmModal; bulk apply must do it here.
+        const actualChanges = allChanges.filter(
+          c => c.currentRead !== c.newRead || c.currentEdit !== c.newEdit
+        );
+        if (actualChanges.length === 0) {
           fieldResults.push({
             targetObjectApiName: fields[i].objectName,
             targetFieldApiName: fields[i].fieldName,
@@ -94,13 +171,12 @@ export function BulkApplyModal({ sourceSnapshot, onClose }: BulkApplyModalProps)
             prev.map((f, idx) => idx === i ? { ...f, status: 'no-changes' } : f)
           );
         } else {
-          const applyResult = await applyFLSChanges(session, changes);
-          const actuallyChanged = changes.filter(c => c.currentRead !== c.newRead || c.currentEdit !== c.newEdit);
+          const applyResult = await applyFLSChanges(session, actualChanges);
           fieldResults.push({
             targetObjectApiName: fields[i].objectName,
             targetFieldApiName: fields[i].fieldName,
             status: 'applied',
-            changes: actuallyChanged.map(c => ({
+            changes: actualChanges.map(c => ({
               permissionSetId: c.permissionSetId,
               permissionSetName: c.permissionSetName,
               type: c.type,
@@ -114,7 +190,7 @@ export function BulkApplyModal({ sourceSnapshot, onClose }: BulkApplyModalProps)
             prev.map((f, idx) => idx === i ? {
               ...f,
               status: 'done',
-              changeCount: changes.length,
+              changeCount: actualChanges.length,
               skippedCount: applyResult.skipped.length || undefined,
               skippedReason: applyResult.skipped[0]?.reason,
             } : f)
@@ -154,7 +230,7 @@ export function BulkApplyModal({ sourceSnapshot, onClose }: BulkApplyModalProps)
         targetFields: fieldResults,
       }).catch(() => {});
     }
-  }, [sourceSnapshot]);
+  }, [sourceSnapshot, filterMode]);
 
   const handleApplyAll = useCallback(async () => {
     if (targetFields.length === 0) return;
@@ -203,10 +279,42 @@ export function BulkApplyModal({ sourceSnapshot, onClose }: BulkApplyModalProps)
         <div class="flex-1 overflow-y-auto px-5 py-4 space-y-4">
           {/* Field picker — hidden once applying */}
           {!applying && !allDone && (
-            <div>
-              <p class="text-xs text-slate-400 mb-2">Add target fields:</p>
-              <FieldPicker key={pickerKey} onFieldSelect={handleAddField} />
-            </div>
+            <>
+              <div>
+                <p class="text-xs text-slate-400 mb-2">Add target fields:</p>
+                <FieldPicker key={pickerKey} onFieldSelect={handleAddField} initialObject={lastObject} />
+              </div>
+
+              {/* Paste field references */}
+              <div class="border-t border-slate-700 pt-4">
+                <p class="text-xs text-slate-400 mb-2">
+                  — or paste field references —
+                </p>
+                <textarea
+                  value={pasteInput}
+                  onInput={(e) => setPasteInput((e.target as HTMLTextAreaElement).value)}
+                  placeholder="Object.Field, Another.Field, …"
+                  rows={3}
+                  class="w-full px-3 py-2 text-xs rounded-md bg-slate-800 border border-slate-700
+                         text-slate-200 placeholder-slate-500 resize-none
+                         focus:outline-none focus:ring-1 focus:ring-cyan-500/50 focus:border-cyan-500/50"
+                />
+                <div class="flex items-center justify-between mt-2">
+                  <button
+                    onClick={handleParsePaste}
+                    disabled={!pasteInput.trim()}
+                    class="btn-secondary text-[11px] py-1 px-3 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Parse & Add
+                  </button>
+                  {pasteFeedback && (
+                    <span class={`text-[11px] ${pasteFeedback.includes('Added') ? 'text-emerald-400' : 'text-amber-400'}`}>
+                      {pasteFeedback}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </>
           )}
 
           {/* Target fields list */}
@@ -276,7 +384,7 @@ export function BulkApplyModal({ sourceSnapshot, onClose }: BulkApplyModalProps)
           {/* Empty state */}
           {targetFields.length === 0 && (
             <p class="text-xs text-slate-500 text-center py-4">
-              Use the picker above to add fields to update.
+              Use the picker above or paste field references to add target fields.
             </p>
           )}
 
@@ -311,11 +419,23 @@ export function BulkApplyModal({ sourceSnapshot, onClose }: BulkApplyModalProps)
               <button onClick={onClose} disabled={applying} class="btn-secondary">
                 Cancel
               </button>
-              <button
-                onClick={handleApplyAll}
-                disabled={pendingCount === 0 || applying}
-                class="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
-              >
+              <div class="flex items-center gap-2">
+                <select
+                  value={filterMode}
+                  onChange={(e) => setFilterMode((e.target as HTMLSelectElement).value as typeof filterMode)}
+                  disabled={applying}
+                  class="text-[11px] rounded-md bg-slate-800 border border-slate-700 text-slate-300 px-2 py-1.5
+                         focus:outline-none focus:ring-1 focus:ring-cyan-500/50 disabled:opacity-50"
+                >
+                  <option value="all">All</option>
+                  <option value="profiles">Profiles</option>
+                  <option value="permsets">Perm Sets</option>
+                </select>
+                <button
+                  onClick={handleApplyAll}
+                  disabled={pendingCount === 0 || applying}
+                  class="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                >
                 {applying ? (
                   <span class="flex items-center gap-2">
                     <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -328,6 +448,7 @@ export function BulkApplyModal({ sourceSnapshot, onClose }: BulkApplyModalProps)
                   `Apply to ${pendingCount} field${pendingCount !== 1 ? 's' : ''}`
                 )}
               </button>
+              </div>
             </>
           )}
         </div>

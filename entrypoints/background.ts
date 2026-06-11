@@ -61,6 +61,21 @@ export default defineBackground(() => {
             path: string;
           });
 
+        case 'REST_POST':
+          return handleRestPost(msg.payload as {
+            instanceUrl: string;
+            sessionId: string;
+            path: string;
+            body: unknown;
+          });
+
+        case 'EXECUTE_ANONYMOUS':
+          return handleExecuteAnonymous(msg.payload as {
+            instanceUrl: string;
+            sessionId: string;
+            anonymousBody: string;
+          });
+
         case 'COMPOSITE_REQUEST':
           return handleCompositeRequest(msg.payload as {
             instanceUrl: string;
@@ -169,6 +184,82 @@ async function handleRestGet(payload: {
   }
 }
 
+async function handleRestPost(payload: {
+  instanceUrl: string;
+  sessionId: string;
+  path: string;
+  method: 'POST' | 'PATCH';
+  body: unknown;
+}): Promise<{ type: string; payload: unknown }> {
+  try {
+    const response = await fetch(`${payload.instanceUrl}${payload.path}`, {
+      method: payload.method,
+      headers: {
+        Authorization: `Bearer ${payload.sessionId}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload.body),
+    });
+
+    const text = await response.text();
+
+    if (response.status === 401 || response.status === 403) {
+      return {
+        type: 'API_ERROR',
+        payload: { message: 'Your Salesforce session has expired — please reload the page and try again.', statusCode: response.status, responseBody: text },
+      };
+    }
+
+    return {
+      type: 'API_RESPONSE',
+      payload: { status: response.status, body: text },
+    };
+  } catch (error) {
+    return makeErrorResponse(error);
+  }
+}
+
+async function handleExecuteAnonymous(payload: {
+  instanceUrl: string;
+  sessionId: string;
+  anonymousBody: string;
+}): Promise<{ type: string; payload: unknown }> {
+  try {
+    const url = `${payload.instanceUrl}/services/data/v61.0/tooling/executeAnonymous?anonymousBody=${encodeURIComponent(payload.anonymousBody)}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${payload.sessionId}`,
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    const text = await response.text();
+
+    if (response.status === 401 || response.status === 403) {
+      return {
+        type: 'API_ERROR',
+        payload: { message: 'Your Salesforce session has expired — please reload the page and try again.', statusCode: response.status, responseBody: text },
+      };
+    }
+
+    return {
+      type: 'API_RESPONSE',
+      payload: { status: response.status, body: text },
+    };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return {
+        type: 'API_ERROR',
+        payload: { message: 'Apex execution timed out after 60s — the batch may be too large or Salesforce is slow to respond.', statusCode: 408 },
+      };
+    }
+    return makeErrorResponse(error);
+  }
+}
+
 async function handleCompositeRequest(payload: {
   instanceUrl: string;
   sessionId: string;
@@ -180,7 +271,7 @@ async function handleCompositeRequest(payload: {
   }>;
 }): Promise<{ type: string; payload: unknown }> {
   try {
-    const url = `${payload.instanceUrl}/services/data/v61.0/composite`;
+    const url = `${payload.instanceUrl}/services/data/v61.0/tooling/composite`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -292,12 +383,25 @@ async function handleOpenFLSComparator(payload: {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 async function authenticatedFetch(url: string, sessionId: string): Promise<unknown> {
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${sessionId}`,
-      'Content-Type': 'application/json',
-    },
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 45000);
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${sessionId}`,
+        'Content-Type': 'application/json',
+      },
+      signal: controller.signal,
+    });
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new ApiError('REST API request timed out after 45s — Salesforce may be slow to respond.', 408);
+    }
+    throw error;
+  }
+  clearTimeout(timeoutId);
 
   if (response.status === 401 || response.status === 403) {
     throw new ApiError(

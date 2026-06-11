@@ -1,6 +1,6 @@
 {
   "name": "fls-comparator",
-  "version": "1.0.0",
+  "version": "1.0.5",
   "description": "Compare Salesforce Field Level Security across fields and orgs",
   "private": true,
   "type": "module",

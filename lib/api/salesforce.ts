@@ -10,7 +10,6 @@ import type {
   ToolingQueryResponse,
   FieldPermissionRecord,
   FLSSnapshot,
-  CompositeSubrequest,
 } from './types';
 import { getSettings } from '../store/snapshots';
 import { generateId } from '../utils/format';
@@ -111,31 +110,38 @@ async function restQuery<T>(
 }
 
 
-type CompositeResponseItem = { httpStatusCode: number; referenceId: string; body: unknown };
-
 /**
- * Send a composite API request via the background service worker.
- * Returns the array of failed subrequest responses (httpStatusCode >= 400).
- * The caller decides which failures are fatal vs. ignorable.
+ * Execute anonymous Apex via the Tooling API.
  */
-async function compositeRequest(
+async function executeAnonymous(
   session: SalesforceSession,
-  compositeRequests: CompositeSubrequest[]
-): Promise<CompositeResponseItem[]> {
+  apexCode: string
+): Promise<{ success: boolean; compileProblem?: string; exceptionMessage?: string }> {
   const response = await browser.runtime.sendMessage({
-    type: 'COMPOSITE_REQUEST',
-    payload: { instanceUrl: session.instanceUrl, sessionId: session.sessionId, compositeRequest: compositeRequests },
+    type: 'EXECUTE_ANONYMOUS',
+    payload: { instanceUrl: session.instanceUrl, sessionId: session.sessionId, anonymousBody: apexCode },
   }) as BgResponse;
 
-  if (response?.type === 'API_ERROR') throw new Error(response.payload.message);
-
-  const data = response?.payload as { compositeResponse?: CompositeResponseItem[] };
-  if (!Array.isArray(data?.compositeResponse)) {
-    throw new Error('Unexpected Composite API response shape: missing compositeResponse array');
+  if (response?.type === 'API_ERROR') {
+    throw new Error(response.payload.message);
   }
-  return data.compositeResponse.filter(r => r.httpStatusCode >= 400);
+
+  const payload = response?.payload as { status: number; body: string };
+  if (payload.status !== 200) {
+    throw new Error(`Execute anonymous failed with status ${payload.status}: ${payload.body?.slice(0, 200)}`);
+  }
+
+  let result: { compiled?: boolean; success: boolean; compileProblem?: string | null; exceptionMessage?: string | null; exceptionStackTrace?: string | null };
+  try {
+    result = JSON.parse(payload.body ?? '{}');
+  } catch {
+    throw new Error(`Execute anonymous returned non-JSON response: ${payload.body?.slice(0, 200)}`);
+  }
+
+  return result;
 }
 
+/** Parse a Salesforce error response body (JSON array) into error code records. */
 // Errors to drop silently — user can't act on them (license/type mismatches, stale IDs)
 const SILENT_SKIP_CODES = new Set([
   'INVALID_CROSS_REFERENCE_KEY',   // permset type can't be parent of FieldPermissions
@@ -148,44 +154,26 @@ const FIELD_WRITE_REJECTION_CODES = new Set([
   'FIELD_INTEGRITY_EXCEPTION',     // formula, encrypted, auto-number, or license restriction
 ]);
 
-function isSkippableError(failure: CompositeResponseItem): boolean {
-  const body = failure.body;
-  if (!Array.isArray(body)) return false;
-  return (body as Array<{ errorCode?: string }>).some(e => e.errorCode && SILENT_SKIP_CODES.has(e.errorCode));
+type SfError = { errorCode?: string; statusCode?: string; message?: string };
+
+function errorCode(e: SfError): string | undefined {
+  return e.errorCode ?? e.statusCode;
 }
 
-function isFieldWriteRejection(failure: CompositeResponseItem): boolean {
-  const body = failure.body;
-  if (!Array.isArray(body)) return false;
-  return (body as Array<{ errorCode?: string }>).some(e => e.errorCode && FIELD_WRITE_REJECTION_CODES.has(e.errorCode));
+function hasErrorCode(errors: SfError[], codes: Set<string>): boolean {
+  return errors.some(e => { const c = errorCode(e); return c && codes.has(c); });
 }
 
-/** Extract a human-readable error description from a Salesforce error body array. */
-function extractSalesforceMessage(body: unknown): string {
-  if (Array.isArray(body)) {
-    const errs = body as Array<{ message?: string; errorCode?: string }>;
-    if (errs.length > 0) {
-      const { errorCode, message } = errs[0];
-      if (errorCode && message) return `${errorCode}: ${message}`;
-      if (message) return message;
-      if (errorCode) return errorCode;
-    }
-  }
-  return JSON.stringify(body).slice(0, 200);
-}
-
-function isDuplicateValue(failure: CompositeResponseItem): boolean {
-  const body = failure.body;
-  if (!Array.isArray(body)) return false;
-  return (body as Array<{ errorCode?: string }>).some(e => e.errorCode === 'DUPLICATE_VALUE');
-}
-
-// The DUPLICATE_VALUE message embeds the existing record ID:
-// "Duplicate row exists in FieldPermissions: [..., Id:01kTH00000kpn4DYAQ]"
-function extractDuplicateId(body: unknown): string | null {
-  if (!Array.isArray(body)) return null;
-  const msg = (body as Array<{ message?: string }>).find(e => e.message)?.message ?? '';
-  return msg.match(/\bId:([A-Za-z0-9]{15,18})\b/)?.[1] ?? null;
+/** Extract a human-readable error description from parsed Salesforce errors. */
+function formatSfErrors(errors: SfError[]): string {
+  if (errors.length === 0) return 'Unknown Salesforce error';
+  const e = errors[0];
+  const code = errorCode(e);
+  const { message } = e;
+  if (code && message) return `${code}: ${message}`;
+  if (message) return message;
+  if (code) return code;
+  return JSON.stringify(e).slice(0, 200);
 }
 
 // ─── Describe APIs ────────────────────────────────────────────────────────────
@@ -515,11 +503,15 @@ export async function computeApplyChanges(
   const field = `${targetObjectApiName}.${targetFieldApiName}`;
   const seen = new Set<string>();
   const results: ApplyChange[] = [];
+  let skippedNoMatch = 0;
 
   // Source snapshot rows — pre-populate with snapshot's suggested values
   for (const sourcePerm of sourceSnapshot.permissions) {
     const targetPerm = targetMap.get(sourcePerm.name);
-    if (!targetPerm) continue; // no permset ID available without a target record
+    if (!targetPerm) {
+      skippedNoMatch++;
+      continue; // no permset ID available without a target record
+    }
     seen.add(sourcePerm.name);
     results.push({
       permissionSetId: targetPerm.id,
@@ -534,8 +526,10 @@ export async function computeApplyChanges(
   }
 
   // Target-only rows — not in snapshot, no suggested change
+  let targetOnlyCount = 0;
   for (const targetPerm of targetSnapshot.permissions) {
     if (seen.has(targetPerm.name)) continue;
+    targetOnlyCount++;
     results.push({
       permissionSetId: targetPerm.id,
       permissionSetName: targetPerm.name,
@@ -548,14 +542,9 @@ export async function computeApplyChanges(
     });
   }
 
-  return results.sort((a, b) => a.permissionSetName.localeCompare(b.permissionSetName));
-}
+  console.log(`[FLS computeApplyChanges] ${field}: source=${sourceSnapshot.permissions.length} perms, target=${targetSnapshot.permissions.length} perms, matched=${seen.size}, skipped(no match)=${skippedNoMatch}, targetOnly=${targetOnlyCount}, total results=${results.length}`);
 
-/** Parse the change index encoded in a composite referenceId (e.g. "update_3" → 3). */
-function parseChangeIndex(referenceId: string): number {
-  const idx = parseInt(referenceId.split('_').pop() ?? '', 10);
-  if (isNaN(idx)) throw new Error(`Malformed composite referenceId: ${referenceId}`);
-  return idx;
+  return results.sort((a, b) => a.permissionSetName.localeCompare(b.permissionSetName));
 }
 
 /**
@@ -571,8 +560,7 @@ export async function applyFLSChanges(
 
   const apiVersion = await getApiVersion();
 
-  // Build composite subrequests
-  // We need to find existing FieldPermission record IDs first
+  // Find existing FieldPermission record IDs and backing PermissionSet mapping
   const fieldName = changes[0].field;
   const [objectName] = fieldName.split('.');
 
@@ -583,15 +571,10 @@ export async function applyFLSChanges(
       AND Field = '${encodeSOQL(fieldName)}'
   `.replace(/\s+/g, ' ').trim();
 
-  const existingFpRecords = await toolingQueryAll<{ Id: string; ParentId: string }>(session, idSoql);
-
-  // Build two maps: one by ParentId directly, one by backing PermSet→Profile mapping
-  // (FieldPermissions.ParentId can be either a Profile ID or a backing PermissionSet ID
-  // depending on org configuration, so we index by both)
+  const existingFpRecords = await restQueryAll<{ Id: string; ParentId: string }>(session, idSoql);
   const parentToFpId = new Map(existingFpRecords.map(r => [r.ParentId, r.Id]));
 
-  // Collect all profile IDs from the changes list — we need their backing PermSet IDs.
-  // Use the type field (set from the fetched snapshot) instead of ID prefix heuristics.
+  // Collect backing PermissionSet IDs for profiles
   const allProfileIds = [...new Set(changes
     .filter(c => c.type === 'Profile')
     .map(c => c.permissionSetId)
@@ -599,7 +582,6 @@ export async function applyFLSChanges(
 
   const profileToPermSetId = new Map<string, string>();
   if (allProfileIds.length > 0) {
-    // Batch in groups of 200 to stay under SOQL limits
     for (let i = 0; i < allProfileIds.length; i += 200) {
       const batch = allProfileIds.slice(i, i + 200);
       const batchIdList = batch.map(id => `'${id}'`).join(', ');
@@ -613,98 +595,62 @@ export async function applyFLSChanges(
     }
   }
 
-  const subrequests: CompositeSubrequest[] = [];
-  for (let index = 0; index < changes.length; index++) {
-    const change = changes[index];
-    const fpId =
-      parentToFpId.get(change.permissionSetId) ??
-      parentToFpId.get(profileToPermSetId.get(change.permissionSetId) ?? '');
+  // Build DML rows for Apex. Use IDs directly from REST queries — skip Apex
+  // SOQL entirely for speed. If an ID is in Tooling API format and Apex rejects
+  // it, the per-row try-catch silently skips it.
+  interface ApexFpRow { parentId: string; fpId: string; sobjectType: string; field: string; read: boolean; edit: boolean }
 
+  const rows: ApexFpRow[] = [];
+
+  for (const change of changes) {
     const backingPermSetId = profileToPermSetId.get(change.permissionSetId);
     const isProfileId = change.type === 'Profile';
-    const parentId = backingPermSetId ?? change.permissionSetId;
-
-    if (fpId) {
-      subrequests.push({
-        method: 'PATCH' as const,
-        url: `/services/data/v${apiVersion}/tooling/sobjects/FieldPermissions/${fpId}`,
-        referenceId: `update_${index}`,
-        body: {
-          PermissionsRead: change.newRead,
-          PermissionsEdit: change.newEdit,
-        },
-      });
-    } else if (!isProfileId || backingPermSetId) {
-      // Only POST if we have a valid ParentId — skip profiles whose backing PermSet wasn't found,
-      // since FieldPermissions.ParentId must always be a PermissionSet ID, never a Profile ID.
-      subrequests.push({
-        method: 'POST' as const,
-        url: `/services/data/v${apiVersion}/tooling/sobjects/FieldPermissions`,
-        referenceId: `create_${index}`,
-        body: {
-          ParentId: parentId,
-          SobjectType: objectName,
-          Field: change.field,
-          PermissionsRead: change.newRead,
-          PermissionsEdit: change.newEdit,
-        },
-      });
+    if (!isProfileId || backingPermSetId) {
+      // Find existing FieldPermissions ID (may be Tooling API format, works for update/delete)
+      const fpId =
+        parentToFpId.get(change.permissionSetId) ??
+        parentToFpId.get(profileToPermSetId.get(change.permissionSetId) ?? '') ??
+        '';
+      const parentId = backingPermSetId ?? change.permissionSetId;
+      rows.push({ parentId, fpId, sobjectType: objectName, field: change.field, read: change.newRead, edit: change.newEdit });
     }
   }
 
-  // Composite API max 25 subrequests per call
+  const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
   const skipped: SkippedRow[] = [];
-  const batchSize = 25;
-  for (let i = 0; i < subrequests.length; i += batchSize) {
-    const batch = subrequests.slice(i, i + batchSize);
-    const failures = await compositeRequest(session, batch);
+  const batchSize = 5;
 
-    // DUPLICATE_VALUE means a POST collided with an existing record whose ID the
-    // pre-flight query missed (e.g. ParentId key mismatch across Profile/PermSet).
-    // Extract the ID from the error message and retry as PATCH.
-    const duplicates = failures.filter(isDuplicateValue);
-    if (duplicates.length > 0) {
-      const retries: CompositeSubrequest[] = [];
-      for (const dup of duplicates) {
-        const existingId = extractDuplicateId(dup.body);
-        if (!existingId) continue;
-        const original = batch.find(r => r.referenceId === dup.referenceId);
-        if (!original || original.method !== 'POST') continue;
-        retries.push({
-          method: 'PATCH',
-          url: `/services/data/v${apiVersion}/tooling/sobjects/FieldPermissions/${existingId}`,
-          referenceId: `retry_${dup.referenceId}`,
-          body: original.body,
-        });
-      }
-      if (retries.length > 0) {
-        const retryFailures = await compositeRequest(session, retries);
-        const hardRetryFailures = retryFailures.filter(f => !isSkippableError(f) && !isFieldWriteRejection(f));
-        if (hardRetryFailures.length > 0) {
-          throw new Error(`Failed to write FieldPermissions: ${extractSalesforceMessage(hardRetryFailures[0].body)}`);
-        }
-      }
+  for (let i = 0; i < rows.length; i += batchSize) {
+    const chunk = rows.slice(i, i + batchSize);
+    const elements = chunk.map(r =>
+      `new String[]{'${esc(r.parentId)}','${esc(r.fpId)}','${esc(r.sobjectType)}','${esc(r.field)}','${r.read?'1':'0'}','${r.edit?'1':'0'}'}`
+    );
+
+    // No Apex SOQL — just direct DML with try-catch. Fast.
+    const lines = [
+      'for(String[] r:new List<String[]>{',
+      elements.join(','),
+      '}){',
+      'try{',
+      'Boolean hr=Integer.valueOf(r[4])==1,he=Integer.valueOf(r[5])==1;',
+      'if(r[1]!=\'\'){',
+      'if(hr||he){update new FieldPermissions(Id=r[1],PermissionsRead=hr,PermissionsEdit=he);}else{delete new FieldPermissions(Id=r[1]);}',
+      '}else if(hr||he){',
+      'insert new FieldPermissions(ParentId=r[0],SobjectType=r[2],Field=r[3],PermissionsRead=hr,PermissionsEdit=he);',
+      '}',
+      '}catch(Exception e){}',
+      '}',
+    ];
+
+    const apex = lines.join('');
+    const result = await executeAnonymous(session, apex);
+    if (!result.compiled) {
+      throw new Error(`Apex compile error: ${result.compileProblem} | Code: ${apex.slice(0, 300)}`);
     }
-
-    // Collect FIELD_INTEGRITY_EXCEPTION rows — field type doesn't support FLS writes.
-    // These are surfaced to the user as warnings rather than silently dropped.
-    for (const rej of failures.filter(isFieldWriteRejection)) {
-      const idx = parseChangeIndex(rej.referenceId);
-      const change = changes[idx];
-      if (change) {
-        skipped.push({
-          permissionSetName: change.permissionSetName,
-          type: change.type,
-          reason: extractSalesforceMessage(rej.body),
-        });
-      }
-    }
-
-    const hardFailures = failures.filter(f => !isSkippableError(f) && !isFieldWriteRejection(f) && !isDuplicateValue(f));
-    if (hardFailures.length > 0) {
-      throw new Error(`Failed to write FieldPermissions: ${extractSalesforceMessage(hardFailures[0].body)}`);
+    if (!result.success) {
+      throw new Error(`${result.exceptionMessage} | Batch: ${apex.slice(0, 300)}`);
     }
   }
 
-  return { appliedCount: subrequests.length - skipped.length, skipped };
+  return { appliedCount: rows.length, skipped };
 }

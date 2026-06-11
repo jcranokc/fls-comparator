@@ -1,4 +1,5 @@
 # FLS Comparator — Firefox/Zen Browser Extension
+
 ## Claude Code Development Plan
 
 ---
@@ -26,16 +27,16 @@ to compare Field Level Security settings across fields within the same org or ac
 
 ## Tech Stack
 
-| Layer | Choice | Reason |
-|---|---|---|
-| Extension platform | WebExtension MV3 | Firefox + Chrome compatible |
-| Language | TypeScript | Type safety for API response shapes |
-| Bundler | Vite + `@samrum/vite-plugin-web-extension` | MV3 support, fast HMR |
-| UI framework | Preact | Small bundle, familiar JSX |
-| Styling | Tailwind CSS (CDN build via PostCSS) | Rapid UI iteration |
-| Salesforce API | REST + Tooling API | Available from any authenticated session |
-| Storage | `browser.storage.local` | Persist snapshots across tabs/sessions |
-| Testing | Vitest | Co-located with Vite |
+| Layer              | Choice                                     | Reason                                   |
+| ------------------ | ------------------------------------------ | ---------------------------------------- |
+| Extension platform | WebExtension MV3                           | Firefox + Chrome compatible              |
+| Language           | TypeScript                                 | Type safety for API response shapes      |
+| Bundler            | Vite + `@samrum/vite-plugin-web-extension` | MV3 support, fast HMR                    |
+| UI framework       | Preact                                     | Small bundle, familiar JSX               |
+| Styling            | Tailwind CSS (CDN build via PostCSS)       | Rapid UI iteration                       |
+| Salesforce API     | REST + Tooling API                         | Available from any authenticated session |
+| Storage            | `browser.storage.local`                    | Persist snapshots across tabs/sessions   |
+| Testing            | Vitest                                     | Co-located with Vite                     |
 
 ---
 
@@ -92,6 +93,7 @@ fls-comparator/
 Use a single shared base and merge browser-specific keys at build time.
 
 **Firefox-specific additions (`manifest.firefox.json`):**
+
 ```json
 {
   "browser_specific_settings": {
@@ -108,6 +110,7 @@ Use a single shared base and merge browser-specific keys at build time.
 ```
 
 **Shared permissions:**
+
 ```json
 "permissions": ["storage", "scripting", "tabs"],
 "host_permissions": ["https://*.salesforce.com/*", "https://*.lightning.force.com/*"]
@@ -120,9 +123,9 @@ Use a single shared base and merge browser-specific keys at build time.
 ```typescript
 // A single field's FLS across all profiles/permission sets
 interface FLSSnapshot {
-  id: string;                    // uuid
-  label: string;                 // user-assigned name, e.g. "Contact.Email - Prod"
-  capturedAt: string;            // ISO timestamp
+  id: string; // uuid
+  label: string; // user-assigned name, e.g. "Contact.Email - Prod"
+  capturedAt: string; // ISO timestamp
   org: OrgContext;
   objectApiName: string;
   fieldApiName: string;
@@ -132,13 +135,13 @@ interface FLSSnapshot {
 interface OrgContext {
   instanceUrl: string;
   orgId: string;
-  orgLabel?: string;             // user-assigned
+  orgLabel?: string; // user-assigned
 }
 
 interface FieldPermissionRecord {
-  id: string;                    // PermissionSet/Profile Id
-  name: string;                  // API name
-  label: string;                 // display label
+  id: string; // PermissionSet/Profile Id
+  name: string; // API name
+  label: string; // display label
   type: "Profile" | "PermissionSet";
   permissionsRead: boolean;
   permissionsEdit: boolean;
@@ -150,17 +153,20 @@ interface FieldPermissionRecord {
 ## Salesforce API Queries
 
 ### Get all objects (for picker)
+
 ```
 GET /services/data/v61.0/sobjects
 ```
 
 ### Get fields for an object (for picker)
+
 ```
 GET /services/data/v61.0/sobjects/{ObjectName}/describe
 → fields[].name, fields[].label
 ```
 
 ### Get FLS for a field (Tooling API)
+
 ```
 GET /services/data/v61.0/tooling/query?q=
   SELECT Id, Field, SobjectType, ParentId, Parent.Name, Parent.Label,
@@ -171,6 +177,7 @@ GET /services/data/v61.0/tooling/query?q=
 ```
 
 ### Get Profile vs PermissionSet type
+
 ```
 GET /services/data/v61.0/tooling/query?q=
   SELECT Id, Name, Label, IsCustom, Type
@@ -187,10 +194,12 @@ fetch calls (avoids CORS issues in the content script context).
 ## Feature Phases
 
 ### Phase 1 — Core FLS Capture & Display
+
 **Goal:** Open the extension on a Salesforce Setup page, pick an object and field, see all
 FLS rows in a clean table.
 
 Tasks:
+
 - [ ] Project scaffold: Vite + TypeScript + Preact + Tailwind
 - [ ] Manifest files (Firefox + Chrome variants), build script merges them
 - [ ] Content script: extract `window.location`, session cookie (`sid`), and org ID from page
@@ -207,9 +216,11 @@ Contact > Email, and see a complete FLS table with all profiles and permission s
 ---
 
 ### Phase 2 — Copy / Paste FLS (Single Org)
+
 **Goal:** Copy FLS from Field A, paste it onto Field B within the same org.
 
 Tasks:
+
 - [ ] `snapshots.ts`: `saveSnapshot()`, `loadSnapshots()`, `deleteSnapshot()` using `browser.storage.local`
 - [ ] "Copy FLS" button — saves current table as a named snapshot
 - [ ] `SnapshotCard` component: shows saved snapshot label, object.field, timestamp, org
@@ -226,9 +237,11 @@ all matching profiles get identical Read/Edit values with a confirmation summary
 ---
 
 ### Phase 3 — Cross-Org Comparison
+
 **Goal:** Export a snapshot from Org A, import/compare in Org B.
 
 Tasks:
+
 - [ ] Export snapshot as JSON file (download)
 - [ ] Import snapshot from JSON file (file picker in popup)
 - [ ] Snapshot manager screen: list all saved snapshots, label editing, delete
@@ -242,9 +255,11 @@ table with rows color-coded by match status and missing rows flagged.
 ---
 
 ### Phase 4 — UX Polish & Settings
+
 **Goal:** Reach a quality bar suitable for publishing to addons.mozilla.org.
 
 Tasks:
+
 - [ ] Settings page: default org label, Salesforce API version pin, max snapshot storage limit
 - [ ] Keyboard shortcuts (open sidebar, trigger copy)
 - [ ] Search/filter row in FLS table (filter by profile name)
@@ -258,7 +273,9 @@ Tasks:
 ---
 
 ### Phase 5 — Publishing
+
 Tasks:
+
 - [ ] Firefox: submit to addons.mozilla.org (AMO), complete review questionnaire
 - [ ] Chrome: submit to Chrome Web Store (same codebase, Chrome manifest variant)
 - [ ] README with screenshots and install links
@@ -269,6 +286,7 @@ Tasks:
 ## Key Implementation Notes
 
 ### Session Extraction
+
 Salesforce Lightning stores the session in a cookie named `sid` scoped to the instance domain.
 The content script reads `document.cookie` and sends `{instanceUrl, sessionId, orgId}` to
 the background worker via `browser.runtime.sendMessage`. The background worker performs all
@@ -276,25 +294,35 @@ API calls — this avoids CORS preflight issues that would occur from content sc
 
 ```typescript
 // content/salesforce-bridge.ts
-const sid = document.cookie.split(';')
-  .find(c => c.trim().startsWith('sid='))
-  ?.split('=')[1];
+const sid = document.cookie
+  .split(";")
+  .find((c) => c.trim().startsWith("sid="))
+  ?.split("=")[1];
 
 const instanceUrl = window.location.origin; // https://myorg.lightning.force.com
 
-const orgId = (window as any).Sfdc?.canvas?.oauth?.orgId
-  ?? document.querySelector('meta[name="salesforce-orgId"]')?.getAttribute('content');
+const orgId =
+  (window as any).Sfdc?.canvas?.oauth?.orgId ??
+  document
+    .querySelector('meta[name="salesforce-orgId"]')
+    ?.getAttribute("content");
 ```
 
 ### Background Fetch Pattern
+
 ```typescript
 // background/service-worker.ts
 browser.runtime.onMessage.addListener(async (msg) => {
-  if (msg.type === 'TOOLING_QUERY') {
+  if (msg.type === "TOOLING_QUERY") {
     const { instanceUrl, sessionId, soql } = msg;
     const res = await fetch(
       `${instanceUrl}/services/data/v61.0/tooling/query?q=${encodeURIComponent(soql)}`,
-      { headers: { Authorization: `Bearer ${sessionId}`, 'Content-Type': 'application/json' } }
+      {
+        headers: {
+          Authorization: `Bearer ${sessionId}`,
+          "Content-Type": "application/json",
+        },
+      },
     );
     return res.json();
   }
@@ -302,6 +330,7 @@ browser.runtime.onMessage.addListener(async (msg) => {
 ```
 
 ### Firefox vs Chrome Namespace
+
 Use the `webextension-polyfill` package so all code uses `browser.*` uniformly.
 Chrome's `chrome.*` namespace is wrapped transparently.
 
@@ -311,8 +340,10 @@ npm install -D @types/webextension-polyfill
 ```
 
 ### Cross-Org Matching
+
 When diffing snapshots from different orgs, match rows by `name` (API name of the
 permission set/profile), not `id` (which is org-specific). Mark rows as:
+
 - `MATCH` — same name, same Read + Edit
 - `READ_DIFFERS` — same name, Read value differs
 - `EDIT_DIFFERS` — same name, Edit value differs

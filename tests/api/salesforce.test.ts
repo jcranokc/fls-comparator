@@ -143,10 +143,10 @@ describe('Salesforce API', () => {
       });
     }
 
-    function mockCompositeResponse(items: { httpStatusCode: number; referenceId: string; body: unknown }[]) {
+    function mockExecuteAnonymous(result: { compiled?: boolean; success: boolean; compileProblem?: string; exceptionMessage?: string }) {
       mockSendMessage.mockResolvedValueOnce({
         type: 'API_RESPONSE',
-        payload: { compositeResponse: items },
+        payload: { status: 200, body: JSON.stringify(result) },
       });
     }
 
@@ -157,42 +157,30 @@ describe('Salesforce API', () => {
       expect(mockSendMessage).not.toHaveBeenCalled();
     });
 
-    it('returns skipped row with Salesforce message on FIELD_INTEGRITY_EXCEPTION', async () => {
+    it('runs Apex DML and returns applied count on success', async () => {
       mockExistingFpQuery();
-      mockCompositeResponse([{
-        httpStatusCode: 400,
-        referenceId: 'create_0',
-        body: [{ errorCode: 'FIELD_INTEGRITY_EXCEPTION', message: 'No FieldPermissions rows exist for formula fields.' }],
-      }]);
+      mockExecuteAnonymous({ compiled: true, success: true });
 
       const result = await applyFLSChanges(testSession, [permSetChange]);
 
-      expect(result.skipped).toHaveLength(1);
-      expect(result.skipped[0].permissionSetName).toBe('Admin');
-      expect(result.skipped[0].reason).toBe('FIELD_INTEGRITY_EXCEPTION: No FieldPermissions rows exist for formula fields.');
+      expect(result.appliedCount).toBe(1);
+      expect(result.skipped).toHaveLength(0);
     });
 
-    it('does not throw on FIELD_INTEGRITY_EXCEPTION — only returns it as a skipped row', async () => {
+    it('throws with Apex error message on failure', async () => {
       mockExistingFpQuery();
-      mockCompositeResponse([{
-        httpStatusCode: 400,
-        referenceId: 'create_0',
-        body: [{ errorCode: 'FIELD_INTEGRITY_EXCEPTION', message: 'Encrypted fields do not support field-level security.' }],
-      }]);
-
-      await expect(applyFLSChanges(testSession, [permSetChange])).resolves.not.toThrow();
-    });
-
-    it('throws with human-readable message (not raw JSON) on hard failures', async () => {
-      mockExistingFpQuery();
-      mockCompositeResponse([{
-        httpStatusCode: 500,
-        referenceId: 'create_0',
-        body: [{ errorCode: 'INTERNAL_ERROR', message: 'Internal server error.' }],
-      }]);
+      mockExecuteAnonymous({ compiled: true, success: false, exceptionMessage: 'Field is not writeable: Formula__c' });
 
       await expect(applyFLSChanges(testSession, [permSetChange]))
-        .rejects.toThrow('INTERNAL_ERROR: Internal server error.');
+        .rejects.toThrow('Field is not writeable: Formula__c');
+    });
+
+    it('throws with compile problem message', async () => {
+      mockExistingFpQuery();
+      mockExecuteAnonymous({ compiled: false, success: false, compileProblem: 'Unexpected token' });
+
+      await expect(applyFLSChanges(testSession, [permSetChange]))
+        .rejects.toThrow('Unexpected token');
     });
   });
 

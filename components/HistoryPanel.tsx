@@ -355,6 +355,10 @@ function EntryCard({ entry, onRolledBack }: EntryCardProps) {
                 {entry.changes.length} change{entry.changes.length !== 1 ? 's' : ''}
               </span>
             )}
+            <span class="text-[11px] text-slate-600">·</span>
+            <span class="text-[11px] text-slate-500" title={entry.org.instanceUrl}>
+              {entry.org.orgLabel || entry.org.instanceUrl.replace(/^https?:\/\//, '').replace(/\.lightning\.force\.com.*$/, '').replace(/\.my\.salesforce\.com.*$/, '')}
+            </span>
             {entry.rolledBack && (
               <>
                 <span class="text-[11px] text-slate-600">·</span>
