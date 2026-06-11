@@ -28,7 +28,7 @@ export default defineConfig({
   manifest: {
     name: 'Salesforce FLS Comparator Expanded',
     description: 'Compare Salesforce Field Level Security across fields and orgs',
-    version: '1.0.3',
+    version: '1.0.4',
 
     permissions: ['storage', 'tabs', 'cookies'],
 
